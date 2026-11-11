@@ -219,5 +219,32 @@ func TestModelLimit(t *testing.T) {
 	if len(a.GetInstalledModels()) != 4 {
 		t.Fatalf("installed list should skip mmproj and .part files")
 	}
-	_ = time.Second
+}
+
+// Pretends to be an old version and updates from the real GitHub
+// Releases page. Run with PHOENIX_NET_TEST=1.
+func TestRealUpdateFromGitHub(t *testing.T) {
+	if os.Getenv("PHOENIX_NET_TEST") == "" {
+		t.Skip("set PHOENIX_NET_TEST=1 to download the real latest installer")
+	}
+	oldV := Version
+	Version = "0.0.1"
+	t.Cleanup(func() { Version = oldV })
+	t.Setenv("PHOENIX_HOME", t.TempDir())
+	t.Setenv("PHOENIX_NO_UPDATE", "1")
+	a := NewApp()
+	if err := Start(a, context.Background(), nil); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	st, err := a.CheckForUpdates()
+	if err != nil || st.State != "ready" {
+		t.Fatalf("update: %v %+v", err, st)
+	}
+	path := filepath.Join(a.paths.Updates, "PhoenixAI-Setup-"+st.Latest+".exe")
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("downloaded and verified %s (%d KB) in %s; notes: %q", filepath.Base(path), info.Size()>>10, time.Since(start).Round(time.Millisecond), st.Notes[:min(60, len(st.Notes))])
 }

@@ -19,9 +19,11 @@ concurrency:
   group: release
   cancel-in-progress: false
 
+# Pinned to Ubuntu 24.04: that is where the NSIS package (makensis) this
+# build uses is known to work.
 jobs:
   check:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.v.outputs.version }}
       needed: ${{ steps.v.outputs.needed }}
@@ -44,7 +46,7 @@ jobs:
   release:
     needs: check
     if: needs.check.outputs.needed == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       VERSION: ${{ needs.check.outputs.version }}
     steps:
