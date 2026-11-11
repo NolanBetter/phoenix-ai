@@ -37,7 +37,7 @@ RequestExecutionLevel user
 !define DATA_DIR   "$LOCALAPPDATA\PhoenixAI"
 
 Name "${APP_NAME}"
-OutFile "../PhoenixAI-Setup-${VERSION}.exe"
+OutFile "..\PhoenixAI-Setup-${VERSION}.exe"
 InstallDir "$LOCALAPPDATA\Programs\${APP_NAME}"
 InstallDirRegKey HKCU "${UNINST_KEY}" "InstallLocation"
 BrandingText "${APP_NAME} ${VERSION}"
@@ -54,8 +54,8 @@ VIAddVersionKey "LegalCopyright" "${PUBLISHER}"
 !include "LogicLib.nsh"
 !include "FileFunc.nsh"
 
-!define MUI_ICON "../appicon.ico"
-!define MUI_UNICON "../appicon.ico"
+!define MUI_ICON "..\appicon.ico"
+!define MUI_UNICON "..\appicon.ico"
 !define MUI_WELCOMEFINISHPAGE_BITMAP "welcome.bmp"
 !define MUI_UNWELCOMEFINISHPAGE_BITMAP "welcome.bmp"
 !define MUI_ABORTWARNING
@@ -132,7 +132,7 @@ Section "Install"
   Call WaitForAppToClose
 
   SetOutPath "$INSTDIR"
-  File "../PhoenixAI.exe"
+  File "..\PhoenixAI.exe"
   WriteUninstaller "$INSTDIR\${UNINST_EXE}"
 
   ; Shortcuts are named "Phoenix AI", which is what Windows search shows.
