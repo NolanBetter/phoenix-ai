@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Phoenix AI</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <aside class="sidebar" aria-label="Chats and navigation">
+      <div class="brand">
+        <span class="mark" data-icon="phoenix"></span>
+        <span class="wordmark">Phoenix</span>
+      </div>
+      <button class="new-chat" id="newChat"><span data-icon="plus"></span>New chat<span class="chat-count" id="chatCount"></span></button>
+      <nav class="chat-list" id="chatList" aria-label="Your chats"></nav>
+      <button class="update-pill" id="updatePill" hidden>
+        <span data-icon="update"></span>
+        <span class="update-text"><strong id="updatePillTitle">Update ready</strong><small id="updatePillSub"></small></span>
+      </button>
+      <div class="nav-bottom">
+        <button class="nav-item" data-view="models"><span data-icon="models"></span>Models<span class="nav-badge" id="dlBadge" hidden></span></button>
+        <button class="nav-item" data-view="settings"><span data-icon="gear"></span>Settings</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <section class="view view-chat" id="viewChat" aria-label="Chat">
+        <header class="topbar">
+          <div class="picker" id="picker">
+            <button class="picker-btn" id="pickerBtn" aria-haspopup="listbox" aria-expanded="false">
+              <span class="picker-name" id="pickerName">Choose a model</span>
+              <span data-icon="chevron"></span>
+            </button>
+            <div class="picker-menu" id="pickerMenu" role="listbox" hidden></div>
+          </div>
+          <div class="model-state" id="modelState" aria-live="polite"></div>
+        </header>
+
+        <div class="scroller" id="scroller">
+          <div class="empty" id="empty">
+            <div class="hero-mark" data-icon="phoenix"></div>
+            <h1 class="greeting" id="greeting">Good evening</h1>
+            <p class="subline" id="subline">Everything you ask stays on this PC.</p>
+            <div class="starter" id="starter"></div>
+          </div>
+          <div class="thread" id="thread"></div>
+        </div>
+
+        <div class="composer-wrap">
+          <form class="composer" id="composer" autocomplete="off">
+            <textarea id="input" rows="1" placeholder="Ask anything" aria-label="Message"></textarea>
+            <div class="composer-row">
+              <button type="button" class="think-toggle" id="thinkToggle" aria-pressed="false" title="Let the model reason before it answers. Slower, but better for hard questions.">
+                <span data-icon="spark"></span>Think first
+              </button>
+              <span class="composer-hint" id="composerHint"></span>
+              <button type="submit" class="send" id="sendBtn" aria-label="Send"><span data-icon="send"></span></button>
+            </div>
+          </form>
+        </div>
+      </section>
+
+      <section class="view view-models" id="viewModels" aria-label="Models" hidden>
+        <div class="page">
+          <header class="page-head">
+            <h1>Models</h1>
+            <p class="page-sub" id="pcSummary"></p>
+          </header>
+          <div id="dlSection"></div>
+          <div id="installedSection"></div>
+          <div id="catalogSection"></div>
+          <section class="block" id="hubSection">
+            <h2>Find more on Hugging Face</h2>
+            <p class="block-sub">Search thousands of open models. These are uploaded by the community: Phoenix checks that each file arrives intact, but not what the model says.</p>
+            <form class="search" id="hubForm">
+              <span data-icon="search"></span>
+              <input id="hubQuery" type="search" placeholder="Try “llama 3.2” or “mistral”" aria-label="Search Hugging Face">
+              <button type="submit" class="btn">Search</button>
+            </form>
+            <div id="hubResults"></div>
+          </section>
+        </div>
+      </section>
+
+      <section class="view view-settings" id="viewSettings" aria-label="Settings" hidden>
+        <div class="page" id="settingsPage"></div>
+      </section>
+    </main>
+  </div>
+
+  <div class="setup" id="setup" hidden>
+    <div class="setup-inner">
+      <div class="hero-mark" data-icon="phoenix"></div>
+      <h1>Welcome to Phoenix AI</h1>
+      <p>Phoenix runs AI models right on this PC, so your chats never leave it. First it needs its engine, a small one-time download.</p>
+      <div class="setup-progress" id="setupProgress" hidden>
+        <div class="bar"><span id="setupBar"></span></div>
+        <div class="setup-stage" id="setupStage"></div>
+      </div>
+      <p class="setup-error" id="setupError" hidden></p>
+      <button class="btn btn-primary btn-big" id="setupBtn">Set up Phoenix</button>
+    </div>
+  </div>
+
+  <div class="dialog-backdrop" id="dialog" hidden>
+    <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="dialogTitle">
+      <h2 id="dialogTitle"></h2>
+      <p id="dialogBody"></p>
+      <div class="dialog-actions">
+        <button class="btn" id="dialogCancel">Cancel</button>
+        <button class="btn btn-danger" id="dialogOk">Delete</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts" aria-live="assertive"></div>
+
+  <script src="vendor/marked.js"></script>
+  <script src="vendor/purify.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,6 @@
+build/PhoenixAI.exe
+build/PhoenixAI-Setup-*.exe
+build/PhoenixAI-Setup-*.exe.sha256
+*.syso
+frontend/wailsjs/
+notes.md
