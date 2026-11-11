@@ -1,34 +1,58 @@
 name: Release
 
-# Push a tag like v0.2.1 (it must match the VERSION file) to build the
-# installer and publish it on the Releases page. Installed copies of
-# Phoenix AI check there and update themselves.
+# When the number in VERSION changes on main, build the installer and
+# publish it as release v<VERSION>. Installed copies of Phoenix AI check
+# the Releases page and update themselves.
+#
+# You can also run it by hand from the Actions tab (Release > Run workflow).
+# Pushes that don't change VERSION skip the build.
 
 on:
   push:
-    tags: ["v*"]
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
+concurrency:
+  group: release
+  cancel-in-progress: false
+
 jobs:
-  release:
+  check:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+      needed: ${{ steps.v.outputs.needed }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="$(tr -d '[:space:]' < VERSION)"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release v$VERSION already exists, so there's nothing to publish."
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Publishing v$VERSION."
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  release:
+    needs: check
+    if: needs.check.outputs.needed == 'true'
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ needs.check.outputs.version }}
     steps:
       - uses: actions/checkout@v6
 
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-
-      - name: Check the tag matches VERSION
-        run: |
-          VERSION="$(tr -d '[:space:]' < VERSION)"
-          if [ "$GITHUB_REF_NAME" != "v$VERSION" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME doesn't match the VERSION file ($VERSION)"
-            exit 1
-          fi
-          echo "VERSION=$VERSION" >> "$GITHUB_ENV"
 
       - name: Run tests
         run: go test ./backend/
@@ -49,8 +73,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "v$VERSION" \
             "build/PhoenixAI-Setup-$VERSION.exe" \
             "build/PhoenixAI-Setup-$VERSION.exe.sha256" \
+            --target "$GITHUB_SHA" \
             --title "Phoenix AI $VERSION" \
             --notes-file notes.md

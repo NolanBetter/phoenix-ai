@@ -34,15 +34,14 @@ Phoenix downloads the installer itself rather than through a browser, so Windows
 
 1. Change the number in `VERSION` (for example `0.2.1`).
 2. Add a `## 0.2.1` section at the top of `CHANGELOG.md`. It becomes the release notes and the "What's new" text inside Phoenix.
-3. Commit, then tag and push:
+3. Commit and push to `main`:
 
 ```
 git commit -am "Phoenix AI 0.2.1"
-git tag v0.2.1
-git push origin main v0.2.1
+git push
 ```
 
-GitHub Actions (`.github/workflows/release.yml`) runs the tests, builds the app and installer, and publishes the release. Everyone's Phoenix picks it up within a few hours.
+GitHub Actions (`.github/workflows/release.yml`) sees the new version number, runs the tests, builds the app and installer, and publishes release `v0.2.1`. Everyone's Phoenix picks it up within a few hours. Pushes that don't change `VERSION` don't publish anything.
 
 ## Project layout
 
