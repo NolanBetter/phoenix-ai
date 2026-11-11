@@ -33,7 +33,7 @@ const (
 type App struct {
 	ctx   context.Context
 	emit  func(event string, data any)
-	quit  func()
+	hooks Hooks
 	paths *Paths
 
 	settingsMu sync.Mutex
@@ -55,14 +55,29 @@ type App struct {
 	// answers that finish somewhere else get marked unread.
 	viewMu  sync.Mutex
 	viewing string
+	// Whether Phoenix is the window in front, so Windows notifications
+	// only appear when you're somewhere else.
+	active bool
 
-	upd *updater
+	upd     *updater
+	pending pendingAttachments
+}
+
+// Hooks are the window features the backend uses. main.go fills them in
+// with Wails; tests leave them empty.
+type Hooks struct {
+	Quit      func()                   // close the window (to restart for an update)
+	PickFiles func() ([]string, error) // Windows' open-file dialog
+	Focus     func()                   // bring the window to the front
 }
 
 // NewApp creates the app. Call Start before using it.
 func NewApp() *App {
-	return &App{emit: func(string, any) {}}
+	return &App{emit: func(string, any) {}, active: true, pending: pendingAttachments{items: map[string]Attachment{}}}
 }
+
+// SetHooks connects the backend to the window.
+func SetHooks(a *App, h Hooks) { a.hooks = h }
 
 // Start wires the app up. emit sends events to the window.
 // It is a package function (not a method) so Wails doesn't expose it to JS.
@@ -82,16 +97,13 @@ func Start(a *App, ctx context.Context, emit func(event string, data any)) error
 	a.runner = newRunner(a)
 	a.dl = newDownloadManager(a)
 	a.chats = newChatStore(p.Chats)
+	cleanupPending(p.Pending)
 	a.upd = newUpdater(a)
 	if UpdateRepo != "" && !isDevVersion(Version) && os.Getenv("PHOENIX_NO_UPDATE") == "" {
 		go a.upd.loop(ctx)
 	}
 	return nil
 }
-
-// SetQuit gives the backend a way to close the window (used to restart
-// for an update).
-func SetQuit(a *App, quit func()) { a.quit = quit }
 
 // Stop shuts the model down. Called when the window closes.
 func Stop(a *App) {
@@ -127,13 +139,14 @@ type AppInfo struct {
 	Platform  string `json:"platform"`
 	MaxChats  int    `json:"maxChats"`
 	MaxModels int    `json:"maxModels"`
+	MaxFiles  int    `json:"maxFiles"`
 }
 
 // GetAppInfo returns the version, limits and where data is stored.
 func (a *App) GetAppInfo() AppInfo {
 	return AppInfo{
 		Version: Version, DataDir: a.paths.Root, Platform: runtime.GOOS,
-		MaxChats: MaxChats, MaxModels: MaxModels,
+		MaxChats: MaxChats, MaxModels: MaxModels, MaxFiles: MaxAttachments,
 	}
 }
 
@@ -148,6 +161,7 @@ func (a *App) SaveSettings(in Settings) (Settings, error) {
 		s.SystemPrompt = in.SystemPrompt
 		s.Thinking = in.Thinking
 		s.AutoUpdate = in.AutoUpdate
+		s.Notifications = in.Notifications
 		if in.Theme == "dark" || in.Theme == "light" || in.Theme == "system" {
 			s.Theme = in.Theme
 		}

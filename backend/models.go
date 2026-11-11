@@ -22,6 +22,11 @@ type InstalledModel struct {
 	Size        int64  `json:"size"`
 	CatalogID   string `json:"catalogId"`
 	Fit         Fit    `json:"fit"`
+	// Vision: its image support is downloaded, so it can see pictures.
+	// VisionAvailable: it could see pictures after a VisionSize download.
+	Vision          bool  `json:"vision"`
+	VisionAvailable bool  `json:"visionAvailable"`
+	VisionSize      int64 `json:"visionSize,omitempty"`
 }
 
 // CatalogEntry is a recommended model plus whether it's on this PC already.
@@ -32,12 +37,25 @@ type CatalogEntry struct {
 	Fit         Fit    `json:"fit"`
 }
 
+// findVisionFile returns the image-support file next to a model, or "".
+func findVisionFile(modelPath string) string {
+	matches, _ := filepath.Glob(filepath.Join(filepath.Dir(modelPath), "*.gguf"))
+	names := []string{}
+	for _, m := range matches {
+		names = append(names, filepath.Base(m))
+	}
+	if v := pickVisionFile(names); v != "" {
+		return filepath.Join(filepath.Dir(modelPath), v)
+	}
+	return ""
+}
+
 // GetCatalog returns the recommended models with how well each runs here.
 func (a *App) GetCatalog() []CatalogEntry {
 	sys := a.sysSnapshot()
 	out := make([]CatalogEntry, 0, len(catalog))
 	for _, m := range catalog {
-		e := CatalogEntry{CatalogModel: m, Fit: fitFor(m.Size, sys)}
+		e := CatalogEntry{CatalogModel: m, Fit: fitFor(m.Size+m.VisionSize, sys)}
 		id := modelID(m.Repo, m.File)
 		if p, ok := safeJoin(a.paths.Models, id); ok {
 			if _, err := os.Stat(p); err == nil {
@@ -84,6 +102,10 @@ func (a *App) GetInstalledModels() []InstalledModel {
 		} else {
 			m.Maker = strings.SplitN(repo, "/", 2)[0]
 		}
+		m.Vision = findVisionFile(p) != ""
+		if c, ok := catalogByRepo(repo); ok && c.Vision != "" && !m.Vision {
+			m.VisionAvailable, m.VisionSize = true, c.VisionSize
+		}
 		out = append(out, m)
 		return nil
 	})
@@ -96,7 +118,9 @@ func (a *App) GetInstalledModels() []InstalledModel {
 func (a *App) modelSlotsUsedLocked(exclude string) int {
 	ids := map[string]bool{}
 	for id := range a.dl.active {
-		ids[id] = true
+		if !isVisionFile(id) {
+			ids[id] = true
+		}
 	}
 	filepath.WalkDir(a.paths.Models, func(p string, de os.DirEntry, err error) error {
 		if err != nil || de.IsDir() {
@@ -135,6 +159,23 @@ func (a *App) DeleteModel(id string) error {
 	}
 	if err := os.Remove(p); err != nil {
 		return errors.New("couldn't delete the model file. Close anything that might be using it and try again")
+	}
+	// Its image support goes too, unless another version of the same model uses it.
+	if v := findVisionFile(p); v != "" {
+		others := false
+		if matches, _ := filepath.Glob(filepath.Join(filepath.Dir(p), "*.gguf")); len(matches) > 0 {
+			for _, m := range matches {
+				if !isVisionFile(m) {
+					others = true
+				}
+			}
+		}
+		if !others {
+			matches, _ := filepath.Glob(filepath.Join(filepath.Dir(p), "*mmproj*"))
+			for _, m := range matches {
+				os.Remove(m)
+			}
+		}
 	}
 	removeEmptyDirs(filepath.Dir(p), a.paths.Models)
 	if a.getSettings().LastModel == id {

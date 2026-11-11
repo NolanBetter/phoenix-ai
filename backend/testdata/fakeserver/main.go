@@ -15,6 +15,7 @@ func main() {
 	args := os.Args[1:]
 	port := ""
 	gpu := true
+	mmproj := ""
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--list-devices":
@@ -23,6 +24,8 @@ func main() {
 			return
 		case "--port":
 			port = args[i+1]
+		case "--mmproj":
+			mmproj = args[i+1]
 		case "-ngl":
 			if args[i+1] == "0" {
 				gpu = false
@@ -32,6 +35,10 @@ func main() {
 	if os.Getenv("FAKE_FAIL_GPU") == "1" && gpu {
 		fmt.Fprintln(os.Stderr, "ggml_vulkan: ErrorOutOfDeviceMemory")
 		fmt.Fprintln(os.Stderr, "failed to allocate buffer")
+		os.Exit(1)
+	}
+	if os.Getenv("FAKE_FAIL_MMPROJ") == "1" && mmproj != "" {
+		fmt.Fprintln(os.Stderr, "clip_init: failed to load model")
 		os.Exit(1)
 	}
 	if os.Getenv("FAKE_FAIL_ALL") == "1" {
@@ -59,13 +66,47 @@ func main() {
 		}
 		var body struct {
 			Messages []struct {
-				Role    string `json:"role"`
-				Content string `json:"content"`
+				Role    string          `json:"role"`
+				Content json.RawMessage `json:"content"`
 			} `json:"messages"`
 			Kwargs map[string]any `json:"chat_template_kwargs"`
 		}
 		json.NewDecoder(r.Body).Decode(&body)
-		last := body.Messages[len(body.Messages)-1].Content
+		// Content is a string, or a list of text and image parts.
+		raw := body.Messages[len(body.Messages)-1].Content
+		last, pictures := "", 0
+		if json.Unmarshal(raw, &last) != nil {
+			var parts []struct {
+				Type     string `json:"type"`
+				Text     string `json:"text"`
+				ImageURL struct {
+					URL string `json:"url"`
+				} `json:"image_url"`
+			}
+			json.Unmarshal(raw, &parts)
+			for _, p := range parts {
+				switch p.Type {
+				case "text":
+					last += p.Text
+				case "image_url":
+					if mmproj == "" {
+						w.WriteHeader(500)
+						w.Write([]byte(`{"error":{"code":500,"message":"image input is not supported - hint: if this is unexpected, you may need to provide the mmproj","type":"server_error"}}`))
+						return
+					}
+					if strings.HasPrefix(p.ImageURL.URL, "data:image/jpeg;base64,") {
+						pictures++
+					}
+				}
+			}
+		}
+		if i := strings.LastIndex(last, "</file>"); i >= 0 {
+			files := strings.Count(last, "<file name=")
+			last = fmt.Sprintf("%d files then %s", files, strings.TrimSpace(last[i+len("</file>"):]))
+		}
+		if pictures > 0 {
+			last = fmt.Sprintf("%d pictures then %s", pictures, last)
+		}
 		if strings.Contains(last, "too long") {
 			w.WriteHeader(400)
 			w.Write([]byte(`{"error":{"code":400,"message":"the request exceeds the available context size, try increasing it","type":"exceed_context_size_error"}}`))

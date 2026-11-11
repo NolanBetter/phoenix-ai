@@ -7,12 +7,28 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body>
+  <header class="titlebar" id="titlebar">
+    <div class="tb-brand">
+      <span class="mark" data-icon="phoenix"></span>
+      <span class="wordmark">Phoenix AI</span>
+    </div>
+    <div class="tb-space"></div>
+    <div class="tb-controls">
+      <button class="tb-btn" id="winMin" aria-label="Minimize" title="Minimize">
+        <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M0 5.5h10"/></svg>
+      </button>
+      <button class="tb-btn" id="winMax" aria-label="Maximize" title="Maximize">
+        <svg class="i-max" viewBox="0 0 10 10" aria-hidden="true"><rect x=".5" y=".5" width="9" height="9" rx="1"/></svg>
+        <svg class="i-restore" viewBox="0 0 10 10" aria-hidden="true"><rect x=".5" y="2.5" width="7" height="7" rx="1"/><path d="M2.5 2.5V1.5a1 1 0 0 1 1-1h5a1 1 0 0 1 1 1v5a1 1 0 0 1-1 1h-1"/></svg>
+      </button>
+      <button class="tb-btn tb-close" id="winClose" aria-label="Close" title="Close">
+        <svg viewBox="0 0 10 10" aria-hidden="true"><path d="M.5.5l9 9M9.5.5l-9 9"/></svg>
+      </button>
+    </div>
+  </header>
+
   <div id="app">
     <aside class="sidebar" aria-label="Chats and navigation">
-      <div class="brand">
-        <span class="mark" data-icon="phoenix"></span>
-        <span class="wordmark">Phoenix</span>
-      </div>
       <button class="new-chat" id="newChat"><span data-icon="plus"></span>New chat<span class="chat-count" id="chatCount"></span></button>
       <nav class="chat-list" id="chatList" aria-label="Your chats"></nav>
       <button class="update-pill" id="updatePill" hidden>
@@ -50,8 +66,10 @@
 
         <div class="composer-wrap">
           <form class="composer" id="composer" autocomplete="off">
+            <div class="attachments" id="attachments" aria-label="Files added to this message" hidden></div>
             <textarea id="input" rows="1" placeholder="Ask anything" aria-label="Message"></textarea>
             <div class="composer-row">
+              <button type="button" class="attach-btn" id="attachBtn" aria-label="Add files" title="Add pictures, PDFs, documents or code"><span data-icon="plus"></span></button>
               <button type="button" class="think-toggle" id="thinkToggle" aria-pressed="false" title="Let the model reason before it answers. Slower, but better for hard questions.">
                 <span data-icon="spark"></span>Think first
               </button>
@@ -59,6 +77,14 @@
               <button type="submit" class="send" id="sendBtn" aria-label="Send"><span data-icon="send"></span></button>
             </div>
           </form>
+        </div>
+
+        <div class="drop-zone" id="dropZone" hidden>
+          <div class="drop-card">
+            <span data-icon="attach"></span>
+            <strong>Drop to add to your message</strong>
+            <span>Pictures, PDFs, Word documents and code</span>
+          </div>
         </div>
       </section>
 
@@ -113,6 +139,15 @@
         <button class="btn btn-danger" id="dialogOk">Delete</button>
       </div>
     </div>
+  </div>
+
+  <div class="viewer" id="viewer" role="dialog" aria-modal="true" aria-labelledby="viewerTitle" hidden>
+    <header class="viewer-bar">
+      <div class="viewer-title" id="viewerTitle"></div>
+      <div class="viewer-tools" id="viewerTools"></div>
+      <button class="icon-btn viewer-close" id="viewerClose" aria-label="Close" title="Close (Esc)"><span data-icon="x"></span></button>
+    </header>
+    <div class="viewer-body" id="viewerBody"></div>
   </div>
 
   <div class="toasts" id="toasts" aria-live="assertive"></div>

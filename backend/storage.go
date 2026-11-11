@@ -15,6 +15,7 @@ type Paths struct {
 	Engine  string
 	Chats   string
 	Updates string
+	Pending string // files added to the message box but not sent yet
 }
 
 func resolvePaths() (*Paths, error) {
@@ -36,8 +37,9 @@ func resolvePaths() (*Paths, error) {
 		Engine:  filepath.Join(root, "engine"),
 		Chats:   filepath.Join(root, "chats"),
 		Updates: filepath.Join(root, "updates"),
+		Pending: filepath.Join(root, "pending"),
 	}
-	for _, d := range []string{p.Root, p.Models, p.Engine, p.Chats, p.Updates} {
+	for _, d := range []string{p.Root, p.Models, p.Engine, p.Chats, p.Updates, p.Pending} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return nil, err
 		}
@@ -47,21 +49,57 @@ func resolvePaths() (*Paths, error) {
 
 // Settings are saved to settings.json.
 type Settings struct {
-	UseGPU       bool   `json:"useGPU"`
-	ContextSize  int    `json:"contextSize"`
-	SystemPrompt string `json:"systemPrompt"`
-	Thinking     bool   `json:"thinking"`
-	LastModel    string `json:"lastModel"`
-	Theme        string `json:"theme"`
-	AutoUpdate   bool   `json:"autoUpdate"`
+	UseGPU        bool   `json:"useGPU"`
+	ContextSize   int    `json:"contextSize"`
+	SystemPrompt  string `json:"systemPrompt"`
+	Thinking      bool   `json:"thinking"`
+	LastModel     string `json:"lastModel"`
+	Theme         string `json:"theme"`
+	AutoUpdate    bool   `json:"autoUpdate"`
+	Notifications bool   `json:"notifications"`
 
 	// Managed by Phoenix, not the user.
-	EngineTag string `json:"engineTag"`
-	EngineExe string `json:"engineExe"`
+	EngineTag string      `json:"engineTag"`
+	EngineExe string      `json:"engineExe"`
+	Window    WindowState `json:"window"`
+}
+
+// WindowState remembers the window's size between launches.
+type WindowState struct {
+	Saved     bool `json:"saved"`
+	Width     int  `json:"width"`
+	Height    int  `json:"height"`
+	Maximised bool `json:"maximised"`
 }
 
 func defaultSettings() Settings {
-	return Settings{UseGPU: true, ContextSize: 8192, Theme: "system", AutoUpdate: true}
+	return Settings{UseGPU: true, ContextSize: 8192, Theme: "system", AutoUpdate: true, Notifications: true}
+}
+
+// SavedWindowState reads the window size from settings.json before the
+// window opens. Ok is false on the first launch.
+func SavedWindowState() (ws WindowState, ok bool) {
+	p, err := resolvePaths()
+	if err != nil {
+		return ws, false
+	}
+	s := loadSettings(p)
+	return s.Window, s.Window.Saved && s.Window.Width >= 600 && s.Window.Height >= 400
+}
+
+// SaveWindowState remembers the window size when Phoenix closes. While
+// maximised it keeps the last normal size, for when you un-maximise.
+func SaveWindowState(a *App, maximised bool, width, height int) {
+	if a.paths == nil {
+		return
+	}
+	_ = a.updateSettings(func(s *Settings) {
+		s.Window.Saved = true
+		s.Window.Maximised = maximised
+		if !maximised && width >= 600 && height >= 400 {
+			s.Window.Width, s.Window.Height = width, height
+		}
+	})
 }
 
 func clampContext(n int) int {

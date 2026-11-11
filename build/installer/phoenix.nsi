@@ -183,6 +183,9 @@ Section "Uninstall"
   Delete "$SMPROGRAMS\${APP_NAME}.lnk"
   Delete "$DESKTOP\${APP_NAME}.lnk"
   DeleteRegKey HKCU "${UNINST_KEY}"
+  ; What Windows notifications used to find Phoenix.
+  DeleteRegKey HKCU "Software\Classes\AppUserModelId\Phoenix AI"
+  DeleteRegKey HKCU "Software\Classes\CLSID\{6E3B1F4A-92C8-4D57-A0B3-7C1E5D9F2A68}"
 
   ; Models and chats stay unless you say otherwise (they can be big
   ; downloads, and you might reinstall).

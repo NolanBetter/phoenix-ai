@@ -13,6 +13,10 @@ type CatalogModel struct {
 	Size        int64    `json:"size"`
 	Tags        []string `json:"tags"`
 	License     string   `json:"license"`
+	// Vision is the model's image-support file in the same repository
+	// (llama.cpp calls it an mmproj). Empty for text-only models.
+	Vision     string `json:"vision,omitempty"`
+	VisionSize int64  `json:"visionSize,omitempty"`
 }
 
 var catalog = []CatalogModel{
@@ -20,37 +24,43 @@ var catalog = []CatalogModel{
 		ID: "qwen3.5-0.8b", Name: "Qwen 3.5 Mini", Maker: "Alibaba", Params: "0.8B",
 		Description: "Tiny and quick. Runs on almost any PC, even without a graphics card.",
 		Repo:        "unsloth/Qwen3.5-0.8B-GGUF", File: "Qwen3.5-0.8B-Q4_K_M.gguf", Size: 532517120,
-		Tags: []string{"Fastest", "Can think"}, License: "Apache 2.0",
+		Tags: []string{"Fastest", "Can think", "Sees images"}, License: "Apache 2.0",
+		Vision: "mmproj-F16.gguf", VisionSize: 204987232,
 	},
 	{
 		ID: "qwen3.5-2b", Name: "Qwen 3.5 Small", Maker: "Alibaba", Params: "2B",
 		Description: "Small and fast. A good pick for laptops and older PCs.",
 		Repo:        "unsloth/Qwen3.5-2B-GGUF", File: "Qwen3.5-2B-Q4_K_M.gguf", Size: 1280835840,
-		Tags: []string{"Fast", "Can think"}, License: "Apache 2.0",
+		Tags: []string{"Fast", "Can think", "Sees images"}, License: "Apache 2.0",
+		Vision: "mmproj-F16.gguf", VisionSize: 668227264,
 	},
 	{
 		ID: "qwen3.5-4b", Name: "Qwen 3.5", Maker: "Alibaba", Params: "4B",
 		Description: "The best all-rounder for most PCs. Start here if you're not sure.",
 		Repo:        "unsloth/Qwen3.5-4B-GGUF", File: "Qwen3.5-4B-Q4_K_M.gguf", Size: 2740937888,
-		Tags: []string{"Recommended", "Can think"}, License: "Apache 2.0",
+		Tags: []string{"Recommended", "Can think", "Sees images"}, License: "Apache 2.0",
+		Vision: "mmproj-F16.gguf", VisionSize: 672423616,
 	},
 	{
 		ID: "gemma-4-e4b", Name: "Gemma 4", Maker: "Google", Params: "E4B",
 		Description: "Google's efficient model. Strong at writing and explaining things clearly.",
 		Repo:        "unsloth/gemma-4-E4B-it-GGUF", File: "gemma-4-E4B-it-Q4_K_M.gguf", Size: 4977171584,
-		Tags: []string{"Writing"}, License: "Apache 2.0",
+		Tags: []string{"Writing", "Sees images"}, License: "Apache 2.0",
+		Vision: "mmproj-F16.gguf", VisionSize: 990372672,
 	},
 	{
 		ID: "qwen3.5-9b", Name: "Qwen 3.5 Plus", Maker: "Alibaba", Params: "9B",
 		Description: "Noticeably smarter. Best with a graphics card that has 8 GB or more.",
 		Repo:        "unsloth/Qwen3.5-9B-GGUF", File: "Qwen3.5-9B-Q4_K_M.gguf", Size: 5680522464,
-		Tags: []string{"Smart", "Can think"}, License: "Apache 2.0",
+		Tags: []string{"Smart", "Can think", "Sees images"}, License: "Apache 2.0",
+		Vision: "mmproj-F16.gguf", VisionSize: 918166080,
 	},
 	{
 		ID: "gemma-4-12b", Name: "Gemma 4 Large", Maker: "Google", Params: "12B",
 		Description: "Thoughtful, well-written answers. Wants a graphics card with 10 GB or more.",
 		Repo:        "unsloth/gemma-4-12b-it-GGUF", File: "gemma-4-12b-it-Q4_K_M.gguf", Size: 7121861440,
-		Tags: []string{"Smart", "Writing"}, License: "Apache 2.0",
+		Tags: []string{"Smart", "Writing", "Sees images"}, License: "Apache 2.0",
+		Vision: "mmproj-F16.gguf", VisionSize: 175115840,
 	},
 	{
 		ID: "gpt-oss-20b", Name: "gpt-oss", Maker: "OpenAI", Params: "20B",
@@ -68,13 +78,24 @@ var catalog = []CatalogModel{
 		ID: "qwen3.8-27b", Name: "Qwen 3.8", Maker: "Alibaba", Params: "27B",
 		Description: "Very capable for hard questions. Needs a high-end graphics card or lots of memory.",
 		Repo:        "unsloth/Qwen3.8-27B-GGUF", File: "Qwen3.8-27B-UD-Q4_K_M.gguf", Size: 16464440224,
-		Tags: []string{"Smartest", "Can think"}, License: "Apache 2.0",
+		Tags: []string{"Smartest", "Can think", "Sees images"}, License: "Apache 2.0",
+		Vision: "mmproj-F16.gguf", VisionSize: 927607488,
 	},
 }
 
 func findCatalog(id string) (CatalogModel, bool) {
 	for _, m := range catalog {
 		if m.ID == id {
+			return m, true
+		}
+	}
+	return CatalogModel{}, false
+}
+
+// catalogByRepo finds the recommended model that comes from a repository.
+func catalogByRepo(repo string) (CatalogModel, bool) {
+	for _, m := range catalog {
+		if m.Repo == repo {
 			return m, true
 		}
 	}

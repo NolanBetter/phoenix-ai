@@ -10,11 +10,39 @@
   const listeners = {};
   const emit = (n, d) => (listeners[n] || []).forEach((cb) => cb(d));
   window.__emit = emit;
+  let maximised = !sc.restored;
   window.runtime = {
     EventsOn(n, cb) { (listeners[n] ||= []).push(cb); return () => {}; },
     BrowserOpenURL() {},
     ClipboardSetText: async () => true,
+    WindowMinimise() {},
+    WindowMaximise() { maximised = true; dispatchEvent(new Event("resize")); },
+    WindowToggleMaximise() { maximised = !maximised; dispatchEvent(new Event("resize")); },
+    WindowIsMaximised: async () => maximised,
+    Quit() {},
+    OnFileDrop() {},
   };
+
+  // Files "added" in the mock live here as data URLs or text.
+  const files = {};
+  let fileSeq = 0;
+  const newId = (ext) => (++fileSeq).toString(16).padStart(16, "a") + ext;
+  window.__attURL = (id) => files[id] || "";
+  window.__attText = (id) => files[id] || "";
+  const drawPicture = (w, h, paint) => {
+    const c = document.createElement("canvas");
+    c.width = w; c.height = h;
+    paint(c.getContext("2d"), w, h);
+    return c.toDataURL("image/jpeg", 0.88);
+  };
+  const sketch = () => drawPicture(1280, 853, (g, w, h) => {
+    const sky = g.createLinearGradient(0, 0, 0, h);
+    sky.addColorStop(0, "#2a1530"); sky.addColorStop(0.6, "#e8492e"); sky.addColorStop(1, "#f5b23a");
+    g.fillStyle = sky; g.fillRect(0, 0, w, h);
+    g.fillStyle = "#fff3d6"; g.beginPath(); g.arc(w * 0.62, h * 0.58, 120, 0, 7); g.fill();
+    g.fillStyle = "#1d1012";
+    g.beginPath(); g.moveTo(0, h); g.lineTo(0, h * 0.72); g.lineTo(w * 0.25, h * 0.55); g.lineTo(w * 0.45, h * 0.75); g.lineTo(w * 0.7, h * 0.6); g.lineTo(w, h * 0.78); g.lineTo(w, h); g.fill();
+  });
   const GB = 2 ** 30;
   const sys = sc.potato
     ? { ram: 8 * GB, gpus: [], bestVram: 0, cpuThreads: 4, diskFree: 61 * GB, gpuChecked: true }
@@ -27,27 +55,31 @@
     return { level: "toobig", label: "Too big for this PC" };
   };
   const cat = [
-    ["qwen3.5-0.8b", "Qwen 3.5 Mini", "Alibaba", "0.8B", "Tiny and quick. Runs on almost any PC, even without a graphics card.", 532517120, ["Fastest", "Can think"]],
-    ["qwen3.5-2b", "Qwen 3.5 Small", "Alibaba", "2B", "Small and fast. A good pick for laptops and older PCs.", 1280835840, ["Fast", "Can think"]],
-    ["qwen3.5-4b", "Qwen 3.5", "Alibaba", "4B", "The best all-rounder for most PCs. Start here if you're not sure.", 2740937888, ["Recommended", "Can think"]],
-    ["gemma-4-e4b", "Gemma 4", "Google", "E4B", "Google's efficient model. Strong at writing and explaining things clearly.", 4977171584, ["Writing"]],
-    ["qwen3.5-9b", "Qwen 3.5 Plus", "Alibaba", "9B", "Noticeably smarter. Best with a graphics card that has 8 GB or more.", 5680522464, ["Smart", "Can think"]],
-    ["gemma-4-12b", "Gemma 4 Large", "Google", "12B", "Thoughtful, well-written answers. Wants a graphics card with 10 GB or more.", 7121861440, ["Smart", "Writing"]],
+    ["qwen3.5-0.8b", "Qwen 3.5 Mini", "Alibaba", "0.8B", "Tiny and quick. Runs on almost any PC, even without a graphics card.", 532517120, ["Fastest", "Can think", "Sees images"]],
+    ["qwen3.5-2b", "Qwen 3.5 Small", "Alibaba", "2B", "Small and fast. A good pick for laptops and older PCs.", 1280835840, ["Fast", "Can think", "Sees images"]],
+    ["qwen3.5-4b", "Qwen 3.5", "Alibaba", "4B", "The best all-rounder for most PCs. Start here if you're not sure.", 2740937888, ["Recommended", "Can think", "Sees images"]],
+    ["gemma-4-e4b", "Gemma 4", "Google", "E4B", "Google's efficient model. Strong at writing and explaining things clearly.", 4977171584, ["Writing", "Sees images"]],
+    ["qwen3.5-9b", "Qwen 3.5 Plus", "Alibaba", "9B", "Noticeably smarter. Best with a graphics card that has 8 GB or more.", 5680522464, ["Smart", "Can think", "Sees images"]],
+    ["gemma-4-12b", "Gemma 4 Large", "Google", "12B", "Thoughtful, well-written answers. Wants a graphics card with 10 GB or more.", 7121861440, ["Smart", "Writing", "Sees images"]],
     ["gpt-oss-20b", "gpt-oss", "OpenAI", "20B", "OpenAI's open model. Always reasons step by step before it answers.", 11624759488, ["Smart", "Always thinks"]],
     ["qwen3-coder-30b", "Qwen 3 Coder", "Alibaba", "30B", "Built for writing and fixing code. Quick for its size because only part of it runs at once.", 17665334432, ["Coding"]],
-    ["qwen3.8-27b", "Qwen 3.8", "Alibaba", "27B", "Very capable for hard questions. Needs a high-end graphics card or lots of memory.", 16464440224, ["Smartest", "Can think"]],
+    ["qwen3.8-27b", "Qwen 3.8", "Alibaba", "27B", "Very capable for hard questions. Needs a high-end graphics card or lots of memory.", 16464440224, ["Smartest", "Can think", "Sees images"]],
   ];
   const installedIds = sc.noModels ? [] : sc.full ? ["qwen3.5-0.8b", "qwen3.5-2b", "qwen3.5-4b", "gemma-4-e4b", "gpt-oss-20b"] : ["qwen3.5-4b", "gpt-oss-20b"];
   const catalog = () => cat.map(([id, name, maker, params, description, size, tags]) => ({
     id, name, maker, params, description, size, tags, repo: "unsloth/" + id, file: id + ".gguf", license: "Apache 2.0",
     installed: installedIds.includes(id), installedId: installedIds.includes(id) ? "unsloth__" + id + "/" + id + ".gguf" : "", fit: fit(size),
   }));
+  const seesImages = ["qwen3.5-0.8b", "qwen3.5-2b", "qwen3.5-4b", "gemma-4-e4b", "qwen3.5-9b", "gemma-4-12b", "qwen3.8-27b"];
+  const visionOn = new Set(["qwen3.5-4b", "qwen3.5-0.8b", "qwen3.5-2b"]);
   const installed = () => catalog().filter((c) => c.installed).map((c) => ({
     id: c.installedId, name: c.name, maker: c.maker, params: c.params, description: c.description, repo: c.repo, file: c.file,
     quant: "Q4_K_M", size: c.size, catalogId: c.id, fit: c.fit,
+    vision: visionOn.has(c.id), visionAvailable: seesImages.includes(c.id) && !visionOn.has(c.id), visionSize: 990372672,
   }));
   const now = Date.now(), day = 86400000;
   const chats = sc.noModels ? [] : [
+    { id: "a0", title: "Turn my sketch into a web page", updated: now - 600e3 },
     { id: "a1", title: "Paper plugin for a parkour timer", updated: now - 3600e3 },
     { id: "a2", title: "Why is the sky orange at sunset?", updated: now - 5 * 3600e3, unread: true },
     { id: "a3", title: "Best way to learn Rust", updated: now - day - 1000 },
@@ -82,15 +114,62 @@
       },
     ],
   };
+  const sketchId = newId(".jpg");
+  files[sketchId] = sketch();
+  const notesId = newId(".txt");
+  files[notesId] = "Sunset page notes\n\n- Big sun in the middle, slowly glowing\n- Mountains along the bottom\n- A short line of text that fades in\n- Should work on phones too\n";
+  const pageHTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Sunset</title>
+<style>
+  html, body { margin: 0; height: 100%; }
+  body {
+    display: grid; place-items: center; overflow: hidden;
+    background: linear-gradient(#2a1530, #e8492e 62%, #f5b23a);
+    font-family: Georgia, serif; color: #fff3d6;
+  }
+  .sun {
+    position: absolute; top: 42%; left: 62%;
+    width: 220px; height: 220px; margin: -110px;
+    border-radius: 50%; background: #fff3d6;
+    box-shadow: 0 0 80px 30px rgba(255, 220, 160, .55);
+    animation: glow 4s ease-in-out infinite alternate;
+  }
+  @keyframes glow { to { box-shadow: 0 0 140px 60px rgba(255, 220, 160, .7); } }
+  svg { position: absolute; bottom: 0; width: 100%; height: 42%; }
+  h1 { position: relative; align-self: start; margin-top: 9vh; font-size: 44px; font-weight: normal; letter-spacing: .02em; animation: fade 2s ease-out both; }
+  @keyframes fade { from { opacity: 0; transform: translateY(12px); } }
+</style>
+</head>
+<body>
+  <div class="sun"></div>
+  <svg viewBox="0 0 100 40" preserveAspectRatio="none"><path d="M0 40V22L25 6l20 20L70 12l30 24v4z" fill="#1d1012"/></svg>
+  <h1>See you at sunset</h1>
+</body>
+</html>`;
+  const sketchConvo = {
+    id: "a0", title: "Turn my sketch into a web page", created: now - 700e3, updated: now - 600e3,
+    messages: [
+      { role: "user", content: "Can you turn this sketch into a web page? My notes are attached too.", time: now - 700e3,
+        attachments: [
+          { id: sketchId, name: "sunset-sketch.png", kind: "image", size: 812004, width: 1280, height: 853 },
+          { id: notesId, name: "page-notes.md", kind: "text", size: 141, chars: 141 },
+        ] },
+      { role: "assistant", modelName: "Qwen 3.5", tps: 58.2, time: now - 600e3,
+        content: "Here's a page that matches your sketch: a glowing sun, dark mountains along the bottom, and a line of text that fades in.\n\n```html\n" + pageHTML + "\n```\n\nSave it as `index.html` and open it in your browser. The sun's glow is the `glow` animation, so change `4s` to make it pulse faster or slower." },
+    ],
+  };
   let engine = sc.noEngine ? { installed: false, version: "", busy: false, stage: "", received: 0, total: 0, error: "" } : { installed: true, version: "b11669", busy: false };
   const downloads = sc.downloading ? [
     { id: "unsloth__qwen3.5-9b/qwen3.5-9b.gguf", catalogId: "qwen3.5-9b", name: "Qwen 3.5 Plus", repo: "unsloth/Qwen3.5-9B-GGUF", file: "x", received: 2.1 * GB, total: 5680522464, speed: 38 * 2 ** 20, status: "downloading" },
   ] : [];
   const later = (ms, fn) => setTimeout(fn, ms);
-  let settings = { useGPU: true, contextSize: 8192, systemPrompt: "", thinking: false, lastModel: installedIds.length ? "unsloth__qwen3.5-4b/qwen3.5-4b.gguf" : "", theme: sc.theme || "dark", autoUpdate: true };
+  let settings = { useGPU: true, contextSize: 8192, systemPrompt: "", thinking: false, lastModel: installedIds.length ? "unsloth__qwen3.5-4b/qwen3.5-4b.gguf" : "", theme: sc.theme || "dark", autoUpdate: true, notifications: true };
   const P = (v) => Promise.resolve(v);
   window.go = { backend: { App: {
-    GetAppInfo: () => P({ version: "0.2.0", dataDir: "C:\\Users\\you\\AppData\\Local\\PhoenixAI", platform: "windows", maxChats: 10, maxModels: 5 }),
+    GetAppInfo: () => P({ version: "0.3.0", dataDir: "C:\\Users\\you\\AppData\\Local\\PhoenixAI", platform: "windows", maxChats: 10, maxModels: 5, maxFiles: 10 }),
     GetSettings: () => P(settings),
     SaveSettings: (s) => { settings = s; return P(s); },
     GetEngineStatus: () => P(engine),
@@ -121,12 +200,12 @@
     ]),
     GetHubFiles: () => P([
       { file: "Llama-3.2-3B-Instruct-Q3_K_L.gguf", size: 1.82 * GB, quant: "Q3_K_L", fit: fit(1.82 * GB), installed: false, recommended: false },
-      { file: "Llama-3.2-3B-Instruct-Q4_K_M.gguf", size: 2.02 * GB, quant: "Q4_K_M", fit: fit(2.02 * GB), installed: false, recommended: true },
+      { file: "Llama-3.2-3B-Instruct-Q4_K_M.gguf", size: 2.02 * GB, quant: "Q4_K_M", fit: fit(2.02 * GB), installed: false, recommended: true, vision: false },
       { file: "Llama-3.2-3B-Instruct-Q6_K.gguf", size: 2.64 * GB, quant: "Q6_K", fit: fit(2.64 * GB), installed: false, recommended: false },
       { file: "Llama-3.2-3B-Instruct-f16.gguf", size: 6.43 * GB, quant: "F16", fit: fit(6.43 * GB), installed: false, recommended: false },
     ]),
     ListChats: () => P(chats.map((c) => ({ ...c, unread: !!c.unread && c.id !== viewing.id }))),
-    GetChat: (id) => P(id === "a1" ? convo : { id, title: (chats.find((c) => c.id === id) || {}).title || "x", messages: [{ role: "user", content: "Hi!" }, { role: "assistant", content: "Hello! What can I help with?", modelName: "Qwen 3.5" }] }),
+    GetChat: (id) => P(id === "a0" ? sketchConvo : id === "a1" ? convo : { id, title: (chats.find((c) => c.id === id) || {}).title || "x", messages: [{ role: "user", content: "Hi!" }, { role: "assistant", content: "Hello! What can I help with?", modelName: "Qwen 3.5" }] }),
     SetViewingChat: (id) => {
       viewing.id = id;
       const c = chats.find((x) => x.id === id);
@@ -148,11 +227,36 @@
     StopGeneration: () => P(),
     OpenDataFolder: () => P(),
     Regenerate: () => P(),
-    SendMessage: (chatId, text, model, think) => {
+    SetWindowActive: () => P(),
+    AddImageSupport: () => P(),
+    PickFiles: () => P(["C:\\Users\\you\\Documents\\Lab report.pdf", "C:\\Users\\you\\Projects\\site\\script.js"]),
+    AddAttachmentFromPath: (path) => new Promise((res) => later(500, () => {
+      const name = path.split("\\").pop();
+      if (name.endsWith(".pdf")) {
+        const id = newId(".txt");
+        files[id] = "[Page 1]\nLab report: how plants grow toward light\n\n[Page 2]\nMethods: three bean plants, one lamp, two weeks.";
+        return res({ id, name, kind: "pdf", size: 1824400, chars: files[id].length, pages: 12 });
+      }
+      const id = newId(".txt");
+      files[id] = "const btn = document.querySelector('button');\nbtn.addEventListener('click', () => alert('Hi!'));\n";
+      res({ id, name, kind: "text", size: 2400, chars: 2391 });
+    })),
+    AddAttachmentData: (name, data) => {
+      const id = newId(data.startsWith("data:image") ? ".jpg" : ".txt");
+      files[id] = data;
+      return P(data.startsWith("data:image")
+        ? { id, name, kind: "image", size: data.length * 0.75, width: 1280, height: 720 }
+        : { id, name, kind: "text", size: data.length * 0.75, chars: Math.round(data.length * 0.75) });
+    },
+    RemovePendingAttachment: () => P(),
+    SendMessage: (chatId, text, model, think, attachmentIds) => {
       const id = chatId || "new1";
       later(10, () => emit("chat:start", { chatId: id, modelId: model, modelName: "Qwen 3.5" }));
       const thoughts = think ? ["The user is asking ", "about ", "something. ", "Let me think step by step."] : [];
-      const words = "Sure! Here's a **short** answer to that. Local models run entirely on your graphics card, so nothing you type leaves this PC.".split(" ");
+      const reply = /page|html|site/i.test(text)
+        ? "Here you go:\n\n```html\n<!doctype html>\n<html>\n<body style=\"margin:0;display:grid;place-items:center;height:100vh;background:#1d1012;color:#ff6a4d;font:48px Georgia\">\n  <h1>Hello from Phoenix</h1>\n</body>\n</html>\n```\n\nSwitch between **Preview** and **Code** above."
+        : "Sure! Here's a **short** answer to that. Local models run entirely on your graphics card, so nothing you type leaves this PC.";
+      const words = reply.split(" ");
       let t = 30;
       thoughts.forEach((w) => later((t += 60), () => emit("chat:delta", { chatId: id, thinking: w })));
       words.forEach((w, i) => later((t += sc.slow ? 400 : 45), () => emit("chat:delta", { chatId: id, content: (i ? " " : "") + w })));
@@ -162,7 +266,7 @@
         emit("chat:done", { chatId: id, message: { role: "assistant", content: words.join(" "), thinking: thoughts.join(""), modelName: "Qwen 3.5", tps: 63.2 } });
         emit("chats:changed");
       });
-      if (!chatId) chats.unshift({ id, title: text.slice(0, 40), updated: Date.now() });
+      if (!chatId) chats.unshift({ id, title: text.slice(0, 40) || "New chat", updated: Date.now() });
       later(5, () => emit("chats:changed"));
       return P(id);
     },

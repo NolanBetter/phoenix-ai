@@ -122,12 +122,12 @@ func TestBuildPrompt(t *testing.T) {
 		{Role: "assistant", Error: "boom"},
 		{Role: "user", Content: "again"},
 	}
-	p := buildPrompt("Be nice.", msgs, 8192)
+	p := buildPrompt("Be nice.", msgs, 8192, false, nil)
 	if p[0].Role != "system" || p[len(p)-1].Content != "again" {
 		t.Fatalf("bad prompt %+v", p)
 	}
 	for _, m := range p {
-		if m.Content == "" {
+		if m.Content == "" || m.Content == nil {
 			t.Fatal("empty message sent")
 		}
 	}
@@ -248,7 +248,11 @@ func (r *recorder) emit(name string, data any) {
 
 func (r *recorder) waitDone(t *testing.T, after int) chatDone {
 	t.Helper()
-	deadline := time.Now().Add(20 * time.Second)
+	limit := 20 * time.Second
+	if os.Getenv("PHOENIX_REAL_DIR") != "" {
+		limit = 10 * time.Minute // a real model on the processor
+	}
+	deadline := time.Now().Add(limit)
 	for time.Now().Before(deadline) {
 		r.mu.Lock()
 		for i := after; i < len(r.events); i++ {
@@ -320,7 +324,7 @@ func TestChatFlow(t *testing.T) {
 
 	// 1. Plain answer, new chat.
 	n := rec.count()
-	chatID, err := a.SendMessage("", "hello there", id, false)
+	chatID, err := a.SendMessage("", "hello there", id, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -341,7 +345,7 @@ func TestChatFlow(t *testing.T) {
 
 	// 2. Thinking, same chat. History is sent along.
 	n = rec.count()
-	if _, err := a.SendMessage(chatID, "think about it", id, true); err != nil {
+	if _, err := a.SendMessage(chatID, "think about it", id, true, nil); err != nil {
 		t.Fatal(err)
 	}
 	d = rec.waitDone(t, n)
@@ -351,7 +355,7 @@ func TestChatFlow(t *testing.T) {
 
 	// 3. <think> tags inside content are split out.
 	n = rec.count()
-	a.SendMessage(chatID, "use tags", id, false)
+	a.SendMessage(chatID, "use tags", id, false, nil)
 	d = rec.waitDone(t, n)
 	if d.Message.Thinking != "raw thoughts" || d.Message.Content != "Tagged answer." {
 		t.Fatalf("tags: %+v", d.Message)
@@ -359,7 +363,7 @@ func TestChatFlow(t *testing.T) {
 
 	// 4. Context overflow gives a clear message.
 	n = rec.count()
-	a.SendMessage(chatID, "this is too long", id, false)
+	a.SendMessage(chatID, "this is too long", id, false, nil)
 	d = rec.waitDone(t, n)
 	if !strings.Contains(d.Message.Error, "too long for the model's memory") {
 		t.Fatalf("overflow: %+v", d.Message)
@@ -380,9 +384,9 @@ func TestChatFlow(t *testing.T) {
 
 	// 6. Stop keeps the partial answer.
 	n = rec.count()
-	a.SendMessage(chatID, "go slow please now ok", id, false)
+	a.SendMessage(chatID, "go slow please now ok", id, false, nil)
 	time.Sleep(700 * time.Millisecond)
-	if _, err := a.SendMessage(chatID, "second", id, false); err == nil {
+	if _, err := a.SendMessage(chatID, "second", id, false, nil); err == nil {
 		t.Error("should refuse a second message while answering")
 	}
 	a.StopGeneration()
@@ -404,7 +408,7 @@ func TestChatFlow(t *testing.T) {
 	// Settings change restarts the model with the new memory length.
 	a.SaveSettings(Settings{UseGPU: true, ContextSize: 4096, Theme: "dark"})
 	n = rec.count()
-	a.SendMessage(chatID, "after settings", id, false)
+	a.SendMessage(chatID, "after settings", id, false, nil)
 	if d = rec.waitDone(t, n); d.Message.Error != "" {
 		t.Fatal(d.Message.Error)
 	}
@@ -428,7 +432,7 @@ func TestGPUFallbackAndErrors(t *testing.T) {
 
 	t.Setenv("FAKE_FAIL_GPU", "1")
 	n := rec.count()
-	a.SendMessage("", "hi", id, false)
+	a.SendMessage("", "hi", id, false, nil)
 	d := rec.waitDone(t, n)
 	if d.Message.Error != "" {
 		t.Fatalf("fallback failed: %s", d.Message.Error)
@@ -442,7 +446,7 @@ func TestGPUFallbackAndErrors(t *testing.T) {
 	t.Setenv("FAKE_FAIL_GPU", "")
 	t.Setenv("FAKE_FAIL_ALL", "1")
 	n = rec.count()
-	a.SendMessage("", "hi again", id, false)
+	a.SendMessage("", "hi again", id, false, nil)
 	d = rec.waitDone(t, n)
 	if !strings.Contains(d.Message.Error, "newer than your AI engine") {
 		t.Fatalf("expected friendly error, got %q", d.Message.Error)

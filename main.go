@@ -31,17 +31,47 @@ func main() {
 		webviewData = filepath.Join(base, "PhoenixAI", "webview")
 	}
 
+	// Open the window the way it was left; the first time, fill the screen.
+	width, height, start := 1240, 820, options.Maximised
+	if ws, ok := backend.SavedWindowState(); ok {
+		width, height = ws.Width, ws.Height
+		if !ws.Maximised {
+			start = options.Normal
+		}
+	}
+
 	err := wails.Run(&options.App{
 		Title:            "Phoenix AI",
-		Width:            1240,
-		Height:           820,
+		Width:            width,
+		Height:           height,
 		MinWidth:         880,
 		MinHeight:        600,
+		WindowStartState: start,
+		Frameless:        true, // Phoenix draws its own title bar
 		BackgroundColour: &options.RGBA{R: 29, G: 16, B: 18, A: 255},
-		AssetServer:      &assetserver.Options{Assets: assets},
+		AssetServer: &assetserver.Options{
+			Assets:  assets,
+			Handler: backend.AttachmentHandler(app), // files added to chats
+		},
+		DragAndDrop: &options.DragAndDrop{EnableFileDrop: true},
 		OnStartup: func(ctx context.Context) {
 			appCtx = ctx
-			backend.SetQuit(app, func() { runtime.Quit(ctx) })
+			backend.SetHooks(app, backend.Hooks{
+				Quit: func() { runtime.Quit(ctx) },
+				PickFiles: func() ([]string, error) {
+					return runtime.OpenMultipleFilesDialog(ctx, runtime.OpenDialogOptions{
+						Title: "Add files",
+						Filters: []runtime.FileFilter{
+							{DisplayName: "Pictures, PDFs, documents and code", Pattern: backend.PickerPattern},
+							{DisplayName: "All files", Pattern: "*.*"},
+						},
+					})
+				},
+				Focus: func() {
+					runtime.WindowUnminimise(ctx)
+					runtime.WindowShow(ctx)
+				},
+			})
 			startErr = backend.Start(app, ctx, func(event string, data any) {
 				runtime.EventsEmit(ctx, event, data)
 			})
@@ -53,6 +83,13 @@ func main() {
 				})
 				runtime.Quit(ctx)
 			}
+		},
+		OnBeforeClose: func(ctx context.Context) bool {
+			if startErr == nil {
+				w, h := runtime.WindowGetSize(ctx)
+				backend.SaveWindowState(app, runtime.WindowIsMaximised(ctx), w, h)
+			}
+			return false
 		},
 		OnShutdown: func(ctx context.Context) {
 			if startErr == nil {
@@ -71,7 +108,8 @@ func main() {
 		},
 		Bind: []interface{}{app},
 		Windows: &windows.Options{
-			Theme:                windows.SystemDefault,
+			Theme:                windows.Dark,
+			WindowClassName:      backend.WindowClass,
 			WebviewUserDataPath:  webviewData,
 			IsZoomControlEnabled: false,
 		},

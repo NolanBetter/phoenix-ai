@@ -39,6 +39,51 @@ type DownloadState struct {
 type dlJob struct {
 	state  DownloadState
 	cancel context.CancelCauseFunc
+	// vision is the model's image-support file, downloaded right after the
+	// model itself. Filled in from the catalog, or from Hugging Face's file list.
+	vision string
+}
+
+// isVisionFile reports whether a file is a model's image support (an
+// "mmproj"), not a model. They don't count toward the model limit.
+func isVisionFile(file string) bool {
+	return strings.Contains(strings.ToLower(filepath.Base(file)), "mmproj")
+}
+
+// pickVisionFile chooses the image-support file from a repository's files:
+// F16 if there is one (best quality for its size), otherwise the next best.
+func pickVisionFile(names []string) string {
+	best, bestScore := "", 0
+	for _, n := range names {
+		l := strings.ToLower(n)
+		if !isVisionFile(n) || !strings.HasSuffix(l, ".gguf") || strings.Contains(n, "/") {
+			continue
+		}
+		score := 1
+		switch {
+		case strings.Contains(l, "bf16"):
+			score = 4
+		case strings.Contains(l, "f16"):
+			score = 5
+		case strings.Contains(l, "q8"):
+			score = 3
+		case strings.Contains(l, "f32"):
+			score = 0
+		}
+		if score > bestScore || best == "" {
+			best, bestScore = n, score
+		}
+	}
+	return best
+}
+
+// visionName is how an image-support download is shown.
+func visionName(repo string) string {
+	if c, ok := catalogByRepo(repo); ok {
+		return "Image support for " + c.Name
+	}
+	name := repo[strings.Index(repo, "/")+1:]
+	return "Image support for " + strings.TrimSuffix(name, "-GGUF")
 }
 
 // errUserCanceled marks a download the user canceled (its partial file is
@@ -100,18 +145,46 @@ func (a *App) DownloadModel(catalogID string) error {
 	if !ok {
 		return errors.New("that model isn't in the list")
 	}
-	return a.dl.start(m.Repo, m.File, m.Name, m.ID)
+	return a.dl.start(m.Repo, m.File, m.Name, m.ID, m.Vision)
 }
 
 // DownloadFromHub downloads any GGUF file from a Hugging Face repository.
 // It also resumes a download that was interrupted.
 func (a *App) DownloadFromHub(repo, file string) error {
-	name := displayName(repo, file)
-	cat, ok := catalogByFile(repo, file)
-	if ok {
-		return a.dl.start(repo, file, cat.Name, cat.ID)
+	if isVisionFile(file) {
+		return a.dl.start(repo, file, visionName(repo), "", "")
 	}
-	return a.dl.start(repo, file, name, "")
+	if cat, ok := catalogByFile(repo, file); ok {
+		return a.dl.start(repo, file, cat.Name, cat.ID, cat.Vision)
+	}
+	return a.dl.start(repo, file, displayName(repo, file), "", "")
+}
+
+// AddImageSupport downloads the image-support file for a model that's
+// already on this PC, so it can see pictures.
+func (a *App) AddImageSupport(modelID string) error {
+	if _, err := a.modelPath(modelID); err != nil {
+		return err
+	}
+	repo := repoFromDir(strings.SplitN(modelID, "/", 2)[0])
+	file := ""
+	if c, ok := catalogByRepo(repo); ok {
+		file = c.Vision
+	} else {
+		info, err := fetchRepoInfo(a.ctx, a.http, repo)
+		if err != nil {
+			return err
+		}
+		names := make([]string, 0, len(info.Siblings))
+		for _, s := range info.Siblings {
+			names = append(names, s.Name)
+		}
+		file = pickVisionFile(names)
+	}
+	if file == "" {
+		return errors.New("this model can't see images")
+	}
+	return a.dl.start(repo, file, visionName(repo), "", "")
 }
 
 // CancelDownload stops a download and deletes what was downloaded so far.
@@ -167,6 +240,11 @@ func (a *App) GetDownloads() []DownloadState {
 		}
 		if c, ok := catalogByFile(repo, file); ok {
 			st.CatalogID, st.Name, st.Total = c.ID, c.Name, c.Size
+		} else if isVisionFile(file) {
+			st.Name = visionName(repo)
+			if c, ok := catalogByRepo(repo); ok && c.Vision == file {
+				st.Total = c.VisionSize
+			}
 		}
 		out = append(out, st)
 		return nil
@@ -175,7 +253,7 @@ func (a *App) GetDownloads() []DownloadState {
 	return out
 }
 
-func (d *downloadManager) start(repo, file, name, catalogID string) error {
+func (d *downloadManager) start(repo, file, name, catalogID, vision string) error {
 	if !repoPattern.MatchString(repo) || !validModelFile(file) {
 		return errors.New("that doesn't look like a valid model file")
 	}
@@ -184,25 +262,32 @@ func (d *downloadManager) start(repo, file, name, catalogID string) error {
 	if !ok {
 		return errors.New("that doesn't look like a valid model file")
 	}
+	companion := isVisionFile(file)
 	if _, err := os.Stat(final); err == nil {
+		if companion {
+			return errors.New("image support is already downloaded")
+		}
 		return errors.New("this model is already downloaded")
 	}
 
 	d.mu.Lock()
 	if _, busy := d.active[id]; busy {
 		d.mu.Unlock()
-		return errors.New("this model is already downloading")
+		return errors.New("this is already downloading")
 	}
-	if d.a.modelSlotsUsedLocked(id) >= MaxModels {
+	if !companion && d.a.modelSlotsUsedLocked(id) >= MaxModels {
 		d.mu.Unlock()
 		return fmt.Errorf("you can keep up to %d models. Delete one on the Models page to download another", MaxModels)
 	}
 	ctx, cancel := context.WithCancelCause(d.a.ctx)
-	j := &dlJob{cancel: cancel, state: DownloadState{
+	j := &dlJob{cancel: cancel, vision: vision, state: DownloadState{
 		ID: id, CatalogID: catalogID, Name: name, Repo: repo, File: file, Status: "downloading",
 	}}
 	if c, ok := findCatalog(catalogID); ok {
 		j.state.Total = c.Size
+		if companion {
+			j.state.Total = c.VisionSize
+		}
 	}
 	d.active[id] = j
 	d.mu.Unlock()
@@ -221,6 +306,17 @@ func (d *downloadManager) start(repo, file, name, catalogID string) error {
 			st.Status, st.Received = "done", st.Total
 			d.a.emit("download:progress", st)
 			d.a.emit("models:changed", nil)
+			// Now fetch the model's image support, if it has one.
+			if v := j.vision; v != "" && !companion {
+				if p, ok := safeJoin(d.a.paths.Models, modelID(repo, v)); ok {
+					if _, err := os.Stat(p); err != nil {
+						_ = d.start(repo, v, visionName(repo), catalogID, "")
+					}
+				}
+			}
+			if !companion {
+				d.a.notifyIfAway(st.Name+" is ready", "It finished downloading. Click to start chatting.", "models")
+			}
 		case userCanceled:
 			os.Remove(final + ".part")
 			removeEmptyDirs(filepath.Dir(final), d.a.paths.Models)
@@ -250,9 +346,14 @@ func (d *downloadManager) run(ctx context.Context, j *dlJob, final string) error
 	part := final + ".part"
 
 	// Ask Hugging Face for the exact size and checksum.
-	info, err := hubFileInfo(ctx, d.a.http, repo, file)
+	info, vision, err := hubFileInfo(ctx, d.a.http, repo, file)
 	if err != nil && !errors.Is(err, errNoInfo) {
 		return err
+	}
+	if j.vision == "" && !isVisionFile(file) && vision != "" {
+		d.mu.Lock()
+		j.vision = vision
+		d.mu.Unlock()
 	}
 	if info.Size > 0 {
 		d.update(j, func(s *DownloadState) { s.Total = info.Size })
@@ -547,17 +648,24 @@ func isGated(v any) bool {
 	return false
 }
 
-func hubFileInfo(ctx context.Context, client *http.Client, repo, file string) (hubFile, error) {
+// hubFileInfo returns a file's size and checksum, plus the repository's
+// image-support file if it has one.
+func hubFileInfo(ctx context.Context, client *http.Client, repo, file string) (hubFile, string, error) {
 	info, err := fetchRepoInfo(ctx, client, repo)
 	if err != nil {
 		if isPermanent(err) {
-			return hubFile{}, err
+			return hubFile{}, "", err
 		}
-		return hubFile{}, errNoInfo // carry on without a checksum
+		return hubFile{}, "", errNoInfo // carry on without a checksum
 	}
 	if isGated(info.Gated) {
-		return hubFile{}, permanentError{"this model requires accepting its license on huggingface.co first, so Phoenix can't download it"}
+		return hubFile{}, "", permanentError{"this model requires accepting its license on huggingface.co first, so Phoenix can't download it"}
 	}
+	names := make([]string, 0, len(info.Siblings))
+	for _, s := range info.Siblings {
+		names = append(names, s.Name)
+	}
+	vision := pickVisionFile(names)
 	for _, s := range info.Siblings {
 		if s.Name == file {
 			hf := hubFile{Size: s.Size}
@@ -567,10 +675,10 @@ func hubFileInfo(ctx context.Context, client *http.Client, repo, file string) (h
 					hf.Size = s.LFS.Size
 				}
 			}
-			return hf, nil
+			return hf, vision, nil
 		}
 	}
-	return hubFile{}, permanentError{"that file no longer exists on Hugging Face"}
+	return hubFile{}, "", permanentError{"that file no longer exists on Hugging Face"}
 }
 
 // HubModel is a search result from Hugging Face.
@@ -637,6 +745,7 @@ type HubFile struct {
 	Fit         Fit    `json:"fit"`
 	Installed   bool   `json:"installed"`
 	Recommended bool   `json:"recommended"`
+	Vision      bool   `json:"vision"` // the model can see images (its image support downloads too)
 }
 
 var quantPattern = regexp.MustCompile(`(?i)(UD-)?(IQ\d_[A-Z]+|Q\d_K_[A-Z]+|Q\d_K|Q\d_\d|Q\d|BF16|F16|F32|MXFP4(?:_MOE)?)`)
@@ -664,6 +773,11 @@ func (a *App) GetHubFiles(repo string) ([]HubFile, error) {
 	}
 	sys := a.sysSnapshot()
 	out := []HubFile{}
+	names := make([]string, 0, len(info.Siblings))
+	for _, s := range info.Siblings {
+		names = append(names, s.Name)
+	}
+	vision := pickVisionFile(names) != ""
 	for _, s := range info.Siblings {
 		name := s.Name
 		lower := strings.ToLower(name)
@@ -674,7 +788,7 @@ func (a *App) GetHubFiles(repo string) ([]HubFile, error) {
 		if s.LFS != nil && s.LFS.Size > 0 {
 			size = s.LFS.Size
 		}
-		hf := HubFile{File: name, Size: size, Quant: quantOf(name), Fit: fitFor(size, sys)}
+		hf := HubFile{File: name, Size: size, Quant: quantOf(name), Fit: fitFor(size, sys), Vision: vision}
 		if p, ok := safeJoin(a.paths.Models, modelID(repo, name)); ok {
 			if _, err := os.Stat(p); err == nil {
 				hf.Installed = true

@@ -24,15 +24,17 @@ type ModelStatus struct {
 	ModelID string `json:"modelId"`
 	Name    string `json:"name"`
 	OnGPU   bool   `json:"onGpu"`
+	Vision  bool   `json:"vision"` // the loaded model can see images
 	Note    string `json:"note"`
 	Error   string `json:"error"`
 }
 
 type launchConfig struct {
-	Exe   string
-	Model string
-	Ctx   int
-	GPU   bool
+	Exe    string
+	Model  string
+	MMProj string // image support file, or ""
+	Ctx    int
+	GPU    bool
 }
 
 // runner starts and stops llama-server with one model loaded at a time.
@@ -50,6 +52,7 @@ type runner struct {
 	status   ModelStatus
 	logs     *ringLog
 	stopping bool
+	vision   bool
 }
 
 func newRunner(a *App) *runner {
@@ -118,7 +121,7 @@ func (r *runner) ensure(ctx context.Context, id string) (string, error) {
 		return "", err
 	}
 	s := r.a.getSettings()
-	cfg := launchConfig{Exe: exe, Model: path, Ctx: s.ContextSize, GPU: s.UseGPU}
+	cfg := launchConfig{Exe: exe, Model: path, MMProj: findVisionFile(path), Ctx: s.ContextSize, GPU: s.UseGPU}
 	name := r.a.modelName(id)
 
 	r.mu.Lock()
@@ -132,17 +135,30 @@ func (r *runner) ensure(ctx context.Context, id string) (string, error) {
 	r.stop()
 	r.setStatus(ModelStatus{State: "loading", ModelID: id, Name: name})
 
-	base, onGPU, note, err := r.start(ctx, cfg, id)
-	if err != nil && cfg.GPU && ctx.Err() == nil {
+	try := cfg
+	base, onGPU, note, err := r.start(ctx, try, id)
+	if err != nil && try.GPU && ctx.Err() == nil {
 		// Try again on the processor. Slower, but it usually works.
 		gpuErr := err
-		cpu := cfg
-		cpu.GPU = false
-		base, onGPU, note, err = r.start(ctx, cpu, id)
+		try.GPU = false
+		base, onGPU, note, err = r.start(ctx, try, id)
 		if err == nil {
 			note = "Your graphics card couldn't load this model, so it's running on the processor. Answers will be slower."
 		} else {
+			try.GPU = cfg.GPU
 			err = gpuErr
+		}
+	}
+	if err != nil && try.MMProj != "" && ctx.Err() == nil {
+		// Image support uses extra memory and can be what tips it over.
+		// Chatting without pictures beats not chatting at all.
+		firstErr := err
+		try.MMProj = ""
+		base, onGPU, note, err = r.start(ctx, try, id)
+		if err == nil {
+			note = strings.TrimSpace("This model's image support couldn't load, so it can only read text right now. " + note)
+		} else {
+			err = firstErr
 		}
 	}
 	if err != nil {
@@ -150,10 +166,18 @@ func (r *runner) ensure(ctx context.Context, id string) (string, error) {
 		return "", err
 	}
 	r.mu.Lock()
-	r.cfg = cfg // remember what was asked for, so a CPU fallback isn't retried every message
+	r.cfg = cfg // remember what was asked for, so a fallback isn't retried every message
+	r.vision = try.MMProj != ""
 	r.mu.Unlock()
-	r.setStatus(ModelStatus{State: "ready", ModelID: id, Name: name, OnGPU: onGPU, Note: note})
+	r.setStatus(ModelStatus{State: "ready", ModelID: id, Name: name, OnGPU: onGPU, Vision: try.MMProj != "", Note: note})
 	return base, nil
+}
+
+// hasVision says whether the loaded model can see images right now.
+func (r *runner) hasVision() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.cmd != nil && r.vision
 }
 
 func freePort() (int, error) {
@@ -178,6 +202,9 @@ func (r *runner) start(ctx context.Context, cfg launchConfig, id string) (base s
 		"--port", strconv.Itoa(port),
 		"-c", strconv.Itoa(cfg.Ctx),
 		"--no-webui",
+	}
+	if cfg.MMProj != "" {
+		args = append(args, "--mmproj", cfg.MMProj)
 	}
 	if !cfg.GPU {
 		args = append(args, "-ngl", "0")

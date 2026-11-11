@@ -150,7 +150,7 @@ func TestChatLimitAndUnread(t *testing.T) {
 	// Answer finishes while another screen is showing: unread.
 	a.SetViewingChat("")
 	n := rec.count()
-	id, err := a.SendMessage("", "hello", model, false)
+	id, err := a.SendMessage("", "hello", model, false, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -164,7 +164,7 @@ func TestChatLimitAndUnread(t *testing.T) {
 	}
 	// Answer finishes while the chat is on screen: stays read.
 	n = rec.count()
-	a.SendMessage(id, "again", model, false)
+	a.SendMessage(id, "again", model, false, nil)
 	rec.waitDone(t, n)
 	if a.ListChats()[0].Unread {
 		t.Fatal("chat on screen shouldn't become unread")
@@ -174,19 +174,19 @@ func TestChatLimitAndUnread(t *testing.T) {
 	for i := 1; i < MaxChats; i++ {
 		a.chats.save(&Chat{ID: newChatID(), Title: fmt.Sprintf("old %d", i), Updated: int64(i)})
 	}
-	if _, err := a.SendMessage("", "one too many", model, false); err == nil || !strings.Contains(err.Error(), "10 chats") {
+	if _, err := a.SendMessage("", "one too many", model, false, nil); err == nil || !strings.Contains(err.Error(), "10 chats") {
 		t.Fatalf("expected chat limit error, got %v", err)
 	}
 	// Existing chats still work.
 	n = rec.count()
-	if _, err := a.SendMessage(id, "still fine", model, false); err != nil {
+	if _, err := a.SendMessage(id, "still fine", model, false, nil); err != nil {
 		t.Fatal(err)
 	}
 	rec.waitDone(t, n)
 	// Deleting one frees a slot.
 	a.DeleteChat(a.ListChats()[MaxChats-1].ID)
 	n = rec.count()
-	if _, err := a.SendMessage("", "now it fits", model, false); err != nil {
+	if _, err := a.SendMessage("", "now it fits", model, false, nil); err != nil {
 		t.Fatalf("after delete: %v", err)
 	}
 	rec.waitDone(t, n)

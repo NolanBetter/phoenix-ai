@@ -42,6 +42,9 @@ const ICONS = {
   x: () => STROKE("M6 6l12 12M18 6L6 18"),
   more: () => `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5.5" cy="12" r="1.6" fill="currentColor"/><circle cx="12" cy="12" r="1.6" fill="currentColor"/><circle cx="18.5" cy="12" r="1.6" fill="currentColor"/></svg>`,
   update: () => STROKE("M12 16V8M8.5 11.5L12 8l3.5 3.5", '<circle cx="12" cy="12" r="9"/>'),
+  attach: () => STROKE("M20 11.5l-8.3 8.3a5 5 0 0 1-7.1-7.1l8.6-8.6a3.4 3.4 0 0 1 4.8 4.8l-8.6 8.6a1.7 1.7 0 0 1-2.4-2.4l7.9-7.9"),
+  expand: () => STROKE("M14 4h6v6M10 20H4v-6M20 4l-6.5 6.5M4 20l6.5-6.5"),
+  image: () => STROKE("M4 17l4.5-4.5 3.5 3.5 2.5-2.5L20 19", '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="9" r="1.6"/>'),
   phoenix: phoenixSVG,
 };
 
@@ -191,6 +194,8 @@ const state = {
   update: null,
   renaming: null,
   viewingSent: null,
+  pending: [], // files added to the message box: {key, loading, ...Attachment}
+  codeModes: new Map(), // "chat:msg:block" -> "preview" | "code"
 };
 
 // ---------- limits ----------
@@ -198,9 +203,10 @@ const state = {
 const maxChats = () => state.info?.maxChats || 10;
 const maxModels = () => state.info?.maxModels || 5;
 const chatsFull = () => state.chats.length >= maxChats();
+const isVisionFile = (id) => /mmproj/i.test(id.split("/").pop());
 function modelSlotsUsed() {
   const ids = new Set(state.installed.map((m) => m.id));
-  Object.keys(state.downloads).forEach((id) => ids.add(id));
+  Object.keys(state.downloads).forEach((id) => { if (!isVisionFile(id)) ids.add(id); });
   return ids.size;
 }
 const modelsFull = () => modelSlotsUsed() >= maxModels();
@@ -393,6 +399,7 @@ function greetingText() {
 }
 
 function newChat() {
+  closeViewer();
   state.chatId = null;
   state.messages = [];
   state.pendingNew = false;
@@ -404,6 +411,7 @@ function newChat() {
 async function openChat(id) {
   try {
     const c = await api().GetChat(id);
+    closeViewer();
     state.chatId = c.id;
     state.messages = c.messages || [];
     state.pendingNew = false;
@@ -490,28 +498,140 @@ function renderThread(scrollToEnd = false) {
     renderStarter();
   } else {
     const lastAssistant = state.messages.map((m) => m.role).lastIndexOf("assistant");
-    state.messages.forEach((m, i) => thread.append(messageEl(m, i === lastAssistant && !live && i === state.messages.length - 1)));
+    state.messages.forEach((m, i) => thread.append(messageEl(m, i === lastAssistant && !live && i === state.messages.length - 1, i)));
     if (live) thread.append(liveEl());
   }
   updateComposer();
   if (scrollToEnd) scrollEnd(true);
 }
 
-function markdownEl(text) {
+function markdownEl(text, codeKey = null) {
   const div = h("div", { class: "answer" });
   div.innerHTML = DOMPurify.sanitize(marked.parse(text || ""), { USE_PROFILES: { html: true } });
-  enhanceCode(div);
+  enhanceCode(div, codeKey);
   return div;
 }
 
-function enhanceCode(root) {
-  $$("pre > code", root).forEach((code) => {
-    const pre = code.parentElement;
-    if ($(".code-head", pre)) return;
-    const lang = ([...code.classList].find((c) => c.startsWith("language-")) || "").slice(9) || "code";
-    const btn = h("button", { class: "copy-code" }, "Copy");
-    btn.addEventListener("click", () => copyText(code.textContent, btn));
-    pre.prepend(h("div", { class: "code-head" }, h("span", {}, lang), btn));
+// ---------- code blocks ----------
+
+const LANG_NAMES = { js: "JavaScript", javascript: "JavaScript", ts: "TypeScript", typescript: "TypeScript", py: "Python", python: "Python",
+  html: "HTML", htm: "HTML", css: "CSS", svg: "SVG", json: "JSON", java: "Java", go: "Go", rust: "Rust", rs: "Rust", cpp: "C++", c: "C",
+  cs: "C#", csharp: "C#", sh: "Shell", bash: "Shell", powershell: "PowerShell", ps1: "PowerShell", sql: "SQL", xml: "XML", yaml: "YAML",
+  yml: "YAML", md: "Markdown", markdown: "Markdown", jsx: "JSX", tsx: "TSX", php: "PHP", ruby: "Ruby", kotlin: "Kotlin", lua: "Lua" };
+
+// What a finished code block can show as a live preview, if anything.
+function previewKind(lang, src) {
+  const l = lang.toLowerCase();
+  const head = src.trimStart().slice(0, 400).toLowerCase();
+  if (l === "svg" || ((l === "xml" || l === "") && /^(<\?xml[^>]*>\s*)?<svg[\s>]/.test(head))) return "svg";
+  if (l === "html" || l === "htm" || l === "xhtml") return "html";
+  if (l === "" && (head.startsWith("<!doctype html") || head.startsWith("<html"))) return "html";
+  return null;
+}
+
+// Turns a code block into a page for the preview. If the page links to
+// style.css or script.js and the same answer has CSS or JavaScript blocks,
+// those are put into the page so it works on its own.
+function previewDoc(kind, src, siblings) {
+  if (kind === "svg") {
+    return `<!doctype html><meta charset="utf-8"><style>html,body{margin:0;height:100%}body{display:grid;place-items:center;background:#fff}svg{max-width:100%;max-height:100vh;height:auto}</style>${src}`;
+  }
+  const css = siblings.filter((b) => b.lang === "css").map((b) => b.src).join("\n");
+  const js = siblings.filter((b) => b.lang === "js" || b.lang === "javascript").map((b) => b.src).join("\n").replace(/<\/script/gi, "<\\/script");
+  const local = (url) => url && !/^(https?:)?\/\//i.test(url) && !/^data:/i.test(url);
+  let doc = src;
+  if (css) {
+    let used = false;
+    doc = doc.replace(/<link\b[^>]*>/gi, (tag) => {
+      const href = (tag.match(/\bhref\s*=\s*["']?([^"'\s>]+)/i) || [])[1];
+      if (!/\bstylesheet\b/i.test(tag) || !local(href) || !/\.css$/i.test(href)) return tag;
+      if (used) return "";
+      used = true;
+      return `<style>\n${css}\n</style>`;
+    });
+  }
+  if (js) {
+    let used = false;
+    doc = doc.replace(/<script\b[^>]*\bsrc\s*=\s*["']?([^"'\s>]+)[^>]*>\s*<\/script>/gi, (tag, src) => {
+      if (!local(src) || !/\.m?js$/i.test(src)) return tag;
+      if (used) return "";
+      used = true;
+      const mod = /type\s*=\s*["']?module/i.test(tag) ? ' type="module"' : "";
+      return `<script${mod}>\n${js}\n</script>`;
+    });
+  }
+  return doc;
+}
+
+const PREVIEW_SANDBOX = "allow-scripts allow-forms allow-modals allow-pointer-lock";
+function previewFrame(doc, title) {
+  // Sandboxed: the page runs in its own locked box and can't reach Phoenix,
+  // your files or the chat.
+  const f = h("iframe", { class: "preview-frame", sandbox: PREVIEW_SANDBOX, referrerpolicy: "no-referrer", title });
+  f.srcdoc = doc;
+  return f;
+}
+
+// Previews load when they scroll into view, so a chat full of them stays fast.
+const previewObserver = "IntersectionObserver" in window ? new IntersectionObserver((entries) => {
+  for (const e of entries) {
+    if (!e.isIntersecting) continue;
+    previewObserver.unobserve(e.target);
+    e.target._load && e.target._load();
+  }
+}, { rootMargin: "300px" }) : null;
+
+function segmented(options, value, onPick, label) {
+  const g = h("div", { class: "seg-mini", role: "group", "aria-label": label });
+  for (const [v, text] of options) {
+    g.append(h("button", { type: "button", "aria-pressed": String(v === value), onclick: (e) => {
+      $$("button", g).forEach((b) => b.setAttribute("aria-pressed", String(b === e.currentTarget)));
+      onPick(v);
+    } }, text));
+  }
+  return g;
+}
+
+// enhanceCode adds the header to each code block: the language, Copy, and
+// for finished HTML or SVG, a Preview/Code switch and a full-screen button.
+// codeKey is null while the answer is still being written.
+function enhanceCode(root, codeKey) {
+  const blocks = $$("pre > code", root).map((code) => {
+    const lang = ([...code.classList].find((c) => c.startsWith("language-")) || "").slice(9).toLowerCase();
+    return { code, pre: code.parentElement, lang, src: code.textContent };
+  });
+  blocks.forEach((b, i) => {
+    if (b.pre.parentElement.classList.contains("code-block")) return;
+    const kind = codeKey ? previewKind(b.lang, b.src) : null;
+    const label = LANG_NAMES[b.lang] || b.lang || "Code";
+    const wrap = h("div", { class: "code-block" });
+    b.pre.replaceWith(wrap);
+    const copy = h("button", { type: "button", class: "copy-code", title: "Copy code" }, ic("copy"), h("span", {}, "Copy"));
+    copy.addEventListener("click", () => copyText(b.src, copy.lastChild));
+    const tools = h("div", { class: "code-tools" });
+    const head = h("div", { class: "code-head" }, h("span", { class: "code-lang" }, label), tools);
+    wrap.append(head, b.pre);
+
+    if (kind) {
+      const key = codeKey + ":" + i;
+      const doc = () => previewDoc(kind, b.src, blocks.filter((x) => x !== b));
+      const pane = h("div", { class: "code-preview" });
+      pane._load = () => { if (!pane.firstChild) pane.append(previewFrame(doc(), `Preview of the ${label} code`)); };
+      const show = (mode) => {
+        state.codeModes.set(key, mode);
+        wrap.classList.toggle("previewing", mode === "preview");
+        if (mode === "preview") previewObserver ? previewObserver.observe(pane) : pane._load();
+      };
+      const mode = state.codeModes.get(key) || "preview";
+      tools.append(
+        segmented([["preview", "Preview"], ["code", "Code"]], mode, show, "Show the preview or the code"),
+        h("button", { type: "button", class: "code-icon", title: "Open full screen", "aria-label": "Open full screen",
+          onclick: () => openCodeViewer({ label, src: b.src, doc: doc(), mode: state.codeModes.get(key) || "preview" }) }, ic("expand")),
+      );
+      wrap.append(pane);
+      show(mode);
+    }
+    tools.append(copy);
   });
 }
 
@@ -526,6 +646,7 @@ async function copyText(text, btn) {
     btn.textContent = "Copied";
     setTimeout(() => (btn.innerHTML = old), 1200);
   }
+  return true;
 }
 
 function thinkingEl(text, live) {
@@ -537,13 +658,16 @@ function thinkingEl(text, live) {
   return d;
 }
 
-function messageEl(m, isLast) {
+function messageEl(m, isLast, index) {
   if (m.role === "user") {
-    return h("div", { class: "msg user" }, h("div", { class: "bubble" }, m.content));
+    const wrap = h("div", { class: "msg user" });
+    if (m.attachments && m.attachments.length) wrap.append(sentFilesEl(m));
+    if (m.content) wrap.append(h("div", { class: "bubble" }, m.content));
+    return wrap;
   }
   const wrap = h("div", { class: "msg assistant" });
   if (m.thinking) wrap.append(thinkingEl(m.thinking, false));
-  if (m.content) wrap.append(markdownEl(m.content));
+  if (m.content) wrap.append(markdownEl(m.content, `${state.chatId}:${index}`));
   if (m.error) {
     wrap.append(h("div", { class: "msg-error" },
       h("p", {}, m.error),
@@ -591,7 +715,7 @@ function fillLive(wrap, g) {
   if (g.content) {
     const md = markdownEl(g.content);
     const last = md.lastElementChild || md;
-    const host = last.tagName === "PRE" ? md : last.tagName === "UL" || last.tagName === "OL" ? last.lastElementChild || last : last;
+    const host = last.classList.contains("code-block") ? md : last.tagName === "UL" || last.tagName === "OL" ? last.lastElementChild || last : last;
     host.append(h("span", { class: "caret", "aria-hidden": "true" }));
     wrap.append(md);
   } else if (!g.thinking) {
@@ -626,6 +750,204 @@ function scrollEnd(force) {
   if (force || nearBottom()) s.scrollTop = s.scrollHeight;
 }
 
+// ---------- files in messages ----------
+
+const maxFiles = () => state.info?.maxFiles || 10;
+const MAX_FILE_BYTES = 25 * 2 ** 20;
+const CODE_FILE = /\.(m?js|jsx|tsx?|py|ipynb|go|rs|java|kt|c|h|cpp|hpp|cs|php|rb|swift|lua|r|sql|sh|bat|ps1|html?|css|scss|vue|svelte|json|xml|ya?ml|toml|ini|svg)$/i;
+let attachSeq = 0;
+
+// Where the window loads a file from: the message box ("pending") or a chat.
+function attURL(scope, id) {
+  return window.__attURL ? window.__attURL(id) : `/att/${scope}/${encodeURIComponent(id)}`;
+}
+
+function attMeta(a) {
+  if (a.kind === "image") return a.width ? `Picture, ${a.width}×${a.height}` : "Picture";
+  let t;
+  if (a.kind === "pdf") t = `PDF, ${a.pages} page${a.pages === 1 ? "" : "s"}`;
+  else if (a.kind === "doc") t = "Word document";
+  else t = `${CODE_FILE.test(a.name) ? "Code" : "Text"}, ${fmtCount(a.chars || 0)} characters`;
+  return a.truncated ? t + ", only the start kept" : t;
+}
+
+function fileTile(name) {
+  const dot = name.lastIndexOf(".");
+  const ext = dot > 0 ? name.slice(dot + 1).slice(0, 4).toUpperCase() : "TXT";
+  return h("span", { class: "file-tile", "aria-hidden": "true" }, ext);
+}
+
+function chipText(a, meta) {
+  return h("span", { class: "chip-text" }, h("span", { class: "chip-name" }, a.name), h("span", { class: "chip-meta" }, meta || attMeta(a)));
+}
+
+function renderAttachments() {
+  const box = $("#attachments");
+  box.textContent = "";
+  box.hidden = !state.pending.length;
+  for (const p of state.pending) {
+    const remove = h("button", { type: "button", class: "chip-x", title: "Remove", "aria-label": `Remove ${p.name}`, onclick: () => removePending(p) }, ic("x"));
+    if (p.kind === "image" && !p.loading) {
+      box.append(h("div", { class: "chip chip-img" },
+        h("button", { type: "button", class: "chip-open", title: p.name, "aria-label": `View ${p.name}`, onclick: () => openImageViewer(p, "pending") },
+          h("img", { src: attURL("pending", p.id), alt: "" })),
+        remove));
+    } else {
+      box.append(h("div", { class: "chip" + (p.loading ? " loading" : ""), title: p.name },
+        p.loading ? h("span", { class: "file-tile" }, h("span", { class: "spinner" })) : fileTile(p.name),
+        chipText(p, p.loading ? "Reading…" : null),
+        remove));
+    }
+  }
+  updateComposer();
+}
+
+function removePending(p) {
+  state.pending = state.pending.filter((x) => x !== p);
+  if (p.id) api().RemovePendingAttachment(p.id).catch(() => {});
+  renderAttachments();
+  $("#input").focus();
+}
+
+// addFiles takes [{path}] (from the picker or a drop) or [{name, data}] (pasted).
+async function addFiles(sources) {
+  if (!sources.length) return;
+  const room = maxFiles() - state.pending.length;
+  if (room <= 0) return toast(`You can add up to ${maxFiles()} files to one message.`);
+  if (sources.length > room) {
+    toast(`You can add up to ${maxFiles()} files to one message, so only the first ${room} were added.`);
+    sources = sources.slice(0, room);
+  }
+  if (state.view !== "chat") setView("chat");
+  await Promise.all(sources.map(async (src) => {
+    const p = { key: ++attachSeq, name: src.name || src.path.split(/[\\/]/).pop(), loading: true };
+    state.pending.push(p);
+    renderAttachments();
+    try {
+      const att = src.path ? await api().AddAttachmentFromPath(src.path) : await api().AddAttachmentData(src.name, src.data);
+      if (!state.pending.includes(p)) return api().RemovePendingAttachment(att.id).catch(() => {}); // removed while it was loading
+      Object.assign(p, att, { loading: false });
+    } catch (e) {
+      state.pending = state.pending.filter((x) => x !== p);
+      toast(e);
+    }
+    renderAttachments();
+  }));
+}
+
+function readAsDataURL(file) {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(r.result);
+    r.onerror = () => reject(new Error(`Couldn't read ${file.name}`));
+    r.readAsDataURL(file);
+  });
+}
+
+// Files the window has in memory: pasted screenshots, or drops when the
+// file's location isn't known.
+async function addBrowserFiles(files) {
+  const ok = [];
+  for (const f of files) {
+    if (f.size > MAX_FILE_BYTES) { toast(`${f.name} is too big. Files can be up to 25 MB.`); continue; }
+    const name = !f.name || /^image\.(png|jpe?g|gif|bmp|webp)$/i.test(f.name) ? "Pasted image." + ((f.type.split("/")[1] || "png").replace("jpeg", "jpg")) : f.name;
+    try { ok.push({ name, data: await readAsDataURL(f) }); } catch (e) { toast(e); }
+  }
+  addFiles(ok);
+}
+
+async function pickFiles() {
+  let paths;
+  try { paths = await api().PickFiles(); } catch (e) { return toast(e); }
+  if (paths && paths.length) addFiles(paths.map((path) => ({ path })));
+  $("#input").focus();
+}
+
+function sentFilesEl(m) {
+  const scope = m._local ? "pending" : state.chatId;
+  const imgs = m.attachments.filter((a) => a.kind === "image");
+  const docs = m.attachments.filter((a) => a.kind !== "image");
+  const box = h("div", { class: "sent-files" });
+  if (imgs.length) {
+    box.append(h("div", { class: "sent-images" + (imgs.length === 1 ? " one" : "") },
+      imgs.map((a) => h("button", { class: "sent-img", title: a.name, "aria-label": `View ${a.name}`, onclick: () => openImageViewer(a, scope) },
+        h("img", { src: attURL(scope, a.id), alt: a.name, loading: "lazy", width: a.width || null, height: a.height || null })))));
+  }
+  if (docs.length) {
+    box.append(h("div", { class: "sent-docs" },
+      docs.map((a) => h("button", { class: "chip", title: `Open ${a.name}`, onclick: () => openTextViewer(a, scope) }, fileTile(a.name), chipText(a)))));
+  }
+  return box;
+}
+
+// ---------- full-screen viewer (previews, code, pictures, files) ----------
+
+let viewerOpener = null;
+function openViewer(title, tools, body) {
+  viewerOpener = document.activeElement;
+  $("#viewerTitle").textContent = "";
+  $("#viewerTitle").append(...[].concat(title));
+  const t = $("#viewerTools");
+  t.textContent = "";
+  t.append(...tools.filter(Boolean));
+  const b = $("#viewerBody");
+  b.textContent = "";
+  b.append(body);
+  $("#viewer").hidden = false;
+  closeMenu();
+  $("#viewerClose").focus();
+}
+function closeViewer() {
+  const v = $("#viewer");
+  if (!v || v.hidden) return;
+  v.hidden = true;
+  $("#viewerBody").textContent = ""; // stops anything running in a preview
+  if (viewerOpener && document.contains(viewerOpener)) viewerOpener.focus();
+  viewerOpener = null;
+}
+
+function numberedCode(src) {
+  const code = h("code", { class: "numbered" });
+  for (const line of src.replace(/\n$/, "").split("\n")) code.append(h("span", { class: "ln" }, line || "​"), "\n");
+  return h("pre", { class: "viewer-code" }, code);
+}
+
+function openCodeViewer({ label, src, doc, mode }) {
+  const body = h("div", { class: "viewer-fill" });
+  const show = (m) => {
+    body.textContent = "";
+    body.append(m === "preview" ? previewFrame(doc, `Preview of the ${label} code`) : numberedCode(src));
+  };
+  const copy = h("button", { type: "button", class: "btn" }, ic("copy"), h("span", {}, "Copy code"));
+  copy.addEventListener("click", () => copyText(src, copy.lastChild));
+  const reload = h("button", { type: "button", class: "btn btn-quiet", title: "Run the page again from the start", onclick: () => { if (body.querySelector("iframe")) show("preview"); } }, ic("retry"), "Reload");
+  const seg = segmented([["preview", "Preview"], ["code", "Code"]], mode, (m) => { reload.hidden = m !== "preview"; show(m); }, "Show the preview or the code");
+  reload.hidden = mode !== "preview";
+  openViewer(label, [seg, reload, copy], body);
+  show(mode);
+}
+
+function openImageViewer(a, scope) {
+  const img = h("img", { src: attURL(scope, a.id), alt: a.name });
+  openViewer([a.name, h("small", {}, attMeta(a))], [], h("div", { class: "viewer-image" }, img));
+}
+
+async function openTextViewer(a, scope) {
+  const body = h("div", { class: "viewer-fill" }, h("div", { class: "note" }, "Opening…"));
+  const copy = h("button", { type: "button", class: "btn", disabled: true }, ic("copy"), h("span", {}, "Copy text"));
+  openViewer([a.name, h("small", {}, attMeta(a) + ". This is the text the model reads.")], [copy], body);
+  try {
+    const text = window.__attText ? window.__attText(a.id) : await (await fetch(attURL(scope, a.id))).text();
+    body.textContent = "";
+    body.append(numberedCode(text));
+    copy.disabled = false;
+    copy.addEventListener("click", () => copyText(text, copy.lastChild));
+  } catch {
+    body.textContent = "";
+    body.append(h("div", { class: "note" }, "Phoenix couldn't find this file anymore."));
+  }
+}
+
 // ---------- composer ----------
 
 function autosize() {
@@ -643,14 +965,26 @@ function updateComposer() {
   btn.setAttribute("aria-label", busy ? "Stop" : "Send");
   btn.title = busy ? "Stop" : "Send";
   const blockedNew = !state.chatId && chatsFull();
-  btn.disabled = !busy && (!state.selected || blockedNew);
+  const m = selectedModel();
+  const blind = m && !m.vision && state.pending.some((p) => p.kind === "image");
+  btn.disabled = !busy && (!state.selected || blockedNew || blind);
   $("#thinkToggle").setAttribute("aria-pressed", String(state.think));
+  $("#attachBtn").disabled = state.pending.length >= maxFiles();
 
   let hint = "Enter to send, Shift+Enter for a new line";
+  let warn = false;
   if (!state.selected) hint = "Download a model to start chatting";
   else if (busy && state.gen.chatId !== state.chatId) hint = "Answering in another chat. Stop it to send here.";
   else if (blockedNew) hint = `Delete a chat to start a new one (${maxChats()} max)`;
-  $("#composerHint").textContent = hint;
+  else if (blind) {
+    warn = true;
+    hint = m.visionAvailable
+      ? `${m.name} needs its image support to see pictures. Add it on the Models page.`
+      : `${m.name} can't see pictures. Pick a model that sees images, or remove the picture.`;
+  }
+  const el = $("#composerHint");
+  el.textContent = hint;
+  el.classList.toggle("warn", warn);
 }
 
 async function send() {
@@ -660,7 +994,9 @@ async function send() {
   }
   const input = $("#input");
   const text = input.value.trim();
-  if (!text) return;
+  if (state.pending.some((p) => p.loading)) return toast("Wait a moment, Phoenix is still reading your files.", "info", 3000);
+  const files = state.pending.map(({ key, loading, ...a }) => a);
+  if (!text && !files.length) return;
   if (!state.selected) {
     toast("Download a model first.");
     setView("models");
@@ -671,20 +1007,28 @@ async function send() {
     return;
   }
   const isNew = !state.chatId;
-  state.messages.push({ role: "user", content: text, time: Date.now() });
+  const msg = { role: "user", content: text, attachments: files, time: Date.now(), _local: true };
+  const keep = state.pending;
+  state.messages.push(msg);
   state.pendingNew = isNew;
+  state.pending = [];
+  renderAttachments();
   input.value = "";
   autosize();
   renderThread(true);
   try {
-    const id = await api().SendMessage(state.chatId || "", text, state.selected, state.think);
+    const id = await api().SendMessage(state.chatId || "", text, state.selected, state.think, files.map((f) => f.id));
     if (!state.chatId) state.chatId = id;
     state.pendingNew = false;
+    delete msg._local; // its files now live in the chat
+    if (files.length) renderThread();
     syncViewing();
     renderChatList();
   } catch (e) {
-    state.messages.pop();
+    state.messages.splice(state.messages.indexOf(msg), 1);
     state.pendingNew = false;
+    state.pending = keep;
+    renderAttachments();
     input.value = text;
     autosize();
     renderThread();
@@ -723,7 +1067,7 @@ function renderPicker() {
     },
       h("span", { class: "n" }, im.name),
       h("span", { class: "sz" }, fmtBytes(im.size)),
-      h("span", { class: "s" }, [im.params, im.quant, im.fit.label].filter(Boolean).join(", ")),
+      h("span", { class: "s" }, [im.params, im.quant, im.vision ? "sees images" : null, im.fit.label].filter(Boolean).join(", ")),
     ));
   }
   if (!state.installed.length) menu.append(h("div", { class: "note" }, "You haven't downloaded any models yet."));
@@ -738,6 +1082,7 @@ function pickModel(id) {
   renderPicker();
   updateComposer();
   if (!state.gen) api().LoadModel(id).catch(toast);
+  $("#input").focus();
 }
 
 function openPicker() {
@@ -761,7 +1106,7 @@ function renderModelState() {
   if (s.state === "idle" || !relevant) return;
   let text = "";
   if (s.state === "loading") text = "Loading into memory…";
-  if (s.state === "ready") text = s.note || (s.onGpu ? "Running on your graphics card" : "Running on your processor");
+  if (s.state === "ready") text = s.note || (s.onGpu ? "Running on your graphics card" : "Running on your processor") + (s.vision ? ", sees images" : "");
   if (s.state === "error") text = s.error;
   el.title = text;
   el.append(h("span", { class: "dot" }), h("span", { class: "note" }, text));
@@ -856,7 +1201,9 @@ function renderInstalledSection() {
       rows.append(h("div", { class: "row" },
         h("div", {},
           h("div", { class: "row-title" }, h("span", { class: "n" }, m.name), h("span", { class: "by" }, [m.maker, m.params].filter(Boolean).join(" "))),
-          h("div", { class: "row-facts" }, heatEl(m.fit), h("span", {}, fmtBytes(m.size)), m.quant ? h("span", {}, m.quant) : null),
+          h("div", { class: "row-facts" }, heatEl(m.fit), h("span", {}, fmtBytes(m.size)), m.quant ? h("span", {}, m.quant) : null,
+            m.vision ? h("span", { class: "sees" }, ic("image"), "Sees images") : null),
+          m.visionAvailable ? visionOffer(m) : null,
         ),
         h("div", { class: "row-side" },
           h("button", { class: "btn", onclick: () => { pickModel(m.id); newChat(); } }, "Chat"),
@@ -867,6 +1214,24 @@ function renderInstalledSection() {
     block.append(rows);
   }
   box.append(block);
+}
+
+// A model that can see pictures once its image support is downloaded.
+function visionOffer(m) {
+  const dl = Object.values(state.downloads).find((d) => isVisionFile(d.id) && d.id.split("/")[0] === m.id.split("/")[0] && d.status !== "error");
+  const box = h("div", { class: "vision-offer" });
+  if (dl) {
+    box.append(h("span", { class: "spinner" }), dl.status === "paused" ? "Image support paused" : `Adding image support: ${dl.total ? Math.floor((dl.received / dl.total) * 100) : 0}%`);
+  } else {
+    box.append(
+      h("span", {}, "This model can see pictures with its image support."),
+      h("button", { class: "btn btn-quiet link", onclick: async (e) => {
+        e.currentTarget.disabled = true;
+        try { await call("AddImageSupport", m.id); } catch {}
+      } }, ic("image"), `Add it (${fmtBytes(m.visionSize)})`),
+    );
+  }
+  return box;
 }
 
 function renderCatalogSection() {
@@ -987,7 +1352,7 @@ function hubFilesEl(repo) {
   for (const f of files) {
     const id = repoDir(repo) + "/" + f.file;
     box.append(h("div", { class: "hub-file" },
-      h("span", { class: "q", title: f.file }, f.quant || "file", f.recommended ? h("span", { class: "tag hot" }, "Best pick") : null),
+      h("span", { class: "q", title: f.file }, f.quant || "file", f.recommended ? h("span", { class: "tag hot" }, "Best pick") : null, f.vision && f.recommended ? h("span", { class: "tag" }, "Sees images") : null),
       h("span", { class: "sz" }, fmtBytes(f.size)),
       heatEl(f.fit),
       h("button", { class: "btn", "data-hub-id": id, "data-installed": f.installed ? "1" : "", onclick: () => downloadHub(repo, f.file) }, "Download"),
@@ -1205,6 +1570,15 @@ function renderSettings() {
       ),
     ),
 
+    h("section", { class: "block" },
+      h("h2", {}, "Notifications"),
+      h("div", { class: "setting" },
+        h("div", { class: "label" }, "Windows notifications"),
+        h("div", { class: "help" }, "When you're in another window, Phoenix lets you know an answer or download is done. Click the notification to jump back."),
+        h("div", { class: "control" }, sw(s.notifications !== false, (v) => save({ notifications: v }), "Windows notifications")),
+      ),
+    ),
+
     h("section", { class: "block", id: "updateBlock" }),
 
     h("section", { class: "block" },
@@ -1252,6 +1626,7 @@ function renderSettings() {
       h("p", { class: "credits" },
         `Phoenix AI ${state.info.version}. Runs models with llama.cpp (MIT license). `,
         "Uses marked and DOMPurify for formatting, and the Bricolage Grotesque typeface (SIL Open Font License). ",
+        "Reads PDFs with ledongthuc/pdf (BSD) and shows notifications with go-toast (MIT). ",
         "Models come from Hugging Face and keep their own licenses.",
       ),
     ),
@@ -1326,6 +1701,13 @@ function wireEvents() {
 
   on("chats:changed", () => refreshChats());
 
+  // A Windows notification was clicked.
+  on("notify:open", (target) => {
+    if (typeof target !== "string") return;
+    if (target.startsWith("chat:")) openChat(target.slice(5));
+    else if (target === "models") setView("models");
+  });
+
   on("chat:start", (e) => {
     if (state.pendingNew && !state.chatId) {
       state.chatId = e.chatId;
@@ -1373,6 +1755,74 @@ function wireEvents() {
   });
 }
 
+// ---------- window: title bar, focus, dropping files ----------
+
+function wireWindow() {
+  const rt = window.runtime;
+  $("#winMin").addEventListener("click", () => rt.WindowMinimise());
+  $("#winMax").addEventListener("click", () => rt.WindowToggleMaximise());
+  $("#winClose").addEventListener("click", () => rt.Quit());
+  // Double-click the bar to maximize or restore, like any Windows app.
+  $("#titlebar").addEventListener("dblclick", (e) => { if (!e.target.closest(".tb-controls")) rt.WindowToggleMaximise(); });
+
+  let resizeTimer = 0;
+  const syncMax = async () => {
+    let max = false;
+    try { max = await rt.WindowIsMaximised(); } catch {}
+    document.body.classList.toggle("maximised", max);
+    const b = $("#winMax");
+    b.title = max ? "Restore down" : "Maximize";
+    b.setAttribute("aria-label", b.title);
+    return max;
+  };
+  addEventListener("resize", () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(syncMax, 80); });
+  // Never bigger than the screen: if Phoenix was last used on a bigger
+  // monitor, or the screen changed, fill this one instead.
+  syncMax().then((max) => {
+    if (!max && (outerWidth > screen.availWidth + 8 || outerHeight > screen.availHeight + 8)) rt.WindowMaximise();
+  });
+
+  // Tell Phoenix whether you're looking at it, so it only shows Windows
+  // notifications when you're somewhere else.
+  let active = null;
+  const syncActive = () => {
+    const now = document.visibilityState === "visible" && document.hasFocus();
+    if (now === active) return;
+    active = now;
+    api().SetWindowActive(now).catch(() => {});
+  };
+  addEventListener("focus", syncActive);
+  addEventListener("blur", () => setTimeout(syncActive, 0)); // focus moving into a preview still counts as here
+  document.addEventListener("visibilitychange", syncActive);
+  syncActive();
+
+  // Dropping files anywhere adds them to the message.
+  const zone = $("#dropZone");
+  let depth = 0;
+  const hasFiles = (e) => e.dataTransfer && [...e.dataTransfer.types].includes("Files");
+  const canDrop = () => $("#setup").hidden && $("#dialog").hidden;
+  const hide = () => { depth = 0; zone.hidden = true; };
+  document.addEventListener("dragenter", (e) => {
+    if (!hasFiles(e) || !canDrop()) return;
+    depth++;
+    if (state.view !== "chat") setView("chat");
+    zone.hidden = false;
+  });
+  document.addEventListener("dragleave", (e) => { if (hasFiles(e) && --depth <= 0) hide(); });
+  document.addEventListener("dragover", (e) => { if (hasFiles(e)) { e.preventDefault(); e.dataTransfer.dropEffect = canDrop() ? "copy" : "none"; } });
+  // In the app, Windows hands over the dropped files' locations (Wails
+  // turns this on once the page has loaded, so check at drop time).
+  const native = () => !!(window.wails && window.wails.flags && window.wails.flags.enableWailsDragAndDrop && rt.OnFileDrop);
+  document.addEventListener("drop", (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    hide();
+    if (!native() && canDrop()) addBrowserFiles([...e.dataTransfer.files]);
+  });
+  if (rt.OnFileDrop) rt.OnFileDrop((x, y, paths) => { hide(); if (canDrop() && paths && paths.length) addFiles(paths.map((path) => ({ path }))); }, false);
+  addEventListener("blur", hide);
+}
+
 // ---------- startup ----------
 
 function wireUI() {
@@ -1390,6 +1840,14 @@ function wireUI() {
     }
   });
   $("#composer").addEventListener("submit", (e) => { e.preventDefault(); send(); });
+  $("#attachBtn").addEventListener("click", pickFiles);
+  input.addEventListener("paste", (e) => {
+    const files = [...((e.clipboardData && e.clipboardData.files) || [])];
+    if (!files.length) return;
+    e.preventDefault();
+    addBrowserFiles(files);
+  });
+  $("#viewerClose").addEventListener("click", closeViewer);
   $("#thinkToggle").addEventListener("click", () => { state.think = !state.think; updateComposer(); });
 
   $("#pickerBtn").addEventListener("click", (e) => {
@@ -1406,6 +1864,7 @@ function wireUI() {
   document.addEventListener("visibilitychange", syncViewing);
   $("#updatePill").addEventListener("click", installUpdate);
   document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("#viewer").hidden && $("#dialog").hidden) { e.preventDefault(); closeViewer(); return; }
     if (e.key === "Escape") closePicker();
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") { e.preventDefault(); newChat(); }
   });
@@ -1434,6 +1893,7 @@ function wireUI() {
 async function start() {
   marked.use({ gfm: true, breaks: false });
   wireUI();
+  wireWindow();
   wireEvents();
 
   const a = api();

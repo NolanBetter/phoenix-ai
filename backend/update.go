@@ -107,10 +107,10 @@ func (a *App) InstallUpdate() error {
 	u.launched = true
 	u.mu.Unlock()
 	u.set(func(s *UpdateStatus) { s.State = "installing" })
-	if a.quit != nil {
+	if a.hooks.Quit != nil {
 		go func() {
 			time.Sleep(400 * time.Millisecond)
-			a.quit()
+			a.hooks.Quit()
 		}()
 	}
 	return nil
