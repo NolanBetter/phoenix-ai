@@ -13,8 +13,12 @@
 ;   /S        install silently (Phoenix's auto-updater uses this)
 ;   /UPDATE   open Phoenix again after installing
 
-; Phoenix itself is 64-bit, so the installer is too.
-Target amd64-unicode
+; A 32-bit installer runs on every Windows PC (the app it installs is
+; 64-bit). Builds that have 64-bit stubs can pass -DTARGET=amd64-unicode.
+!ifndef TARGET
+  !define TARGET "x86-unicode"
+!endif
+Target ${TARGET}
 ManifestDPIAware true
 SetCompressor /SOLID lzma
 RequestExecutionLevel user

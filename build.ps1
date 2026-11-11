@@ -29,5 +29,6 @@ if (-not $makensis) {
 if ($LASTEXITCODE) { exit $LASTEXITCODE }
 $setup = "PhoenixAI-Setup-$version.exe"
 $hash = (Get-FileHash "build\$setup" -Algorithm SHA256).Hash.ToLower()
-Set-Content -NoNewline -Path "build\$setup.sha256" -Value "$hash  $setup`n"
+# Plain ASCII, no byte-order mark, so the updater can read it.
+[IO.File]::WriteAllText((Join-Path $PSScriptRoot "build\$setup.sha256"), "$hash  $setup`n")
 Write-Host "Built build\$setup"
