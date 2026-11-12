@@ -2,6 +2,11 @@
 
 Each section here becomes the release notes on GitHub, and the "What's new" text Phoenix shows when an update is ready.
 
+## 0.4.1
+
+- Fixed: making pictures and videos failed with "The engine stopped". Phoenix was downloading an older version of the picture and video engine than the one it was built for. The right version downloads by itself a few seconds after Phoenix starts.
+- When an engine fails, Phoenix now shows the actual error instead of the last line of the engine's help text.
+
 ## 0.4.0
 
 - **Make pictures and videos.** Download Stable Diffusion XL (pictures) or Wan 2.2 (short videos) on the Models page, pick it in the model menu, and describe what you want. Choose square, wide or tall, and 2 to 5 seconds for videos. Add a picture with **+** to redo it or bring it to life. Save what you make with the download button.

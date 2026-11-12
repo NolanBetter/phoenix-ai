@@ -376,11 +376,49 @@ func friendlyEngineError(logText string) string {
 	case strings.Contains(l, "couldn't bind") || strings.Contains(l, "address already in use"):
 		return "The engine couldn't open its connection. Try again."
 	}
+	if line := lastErrorLine(logText); line != "" {
+		if badOption.MatchString(line) {
+			// The engine printed its help: one of its options is wrong.
+			return "The engine didn't accept one of Phoenix's settings (" + line + "). Phoenix needs an update to fix this."
+		}
+		return "The engine stopped: " + line
+	}
 	lines := strings.Split(strings.TrimSpace(logText), "\n")
 	if len(lines) > 0 && lines[len(lines)-1] != "" {
-		return "The engine stopped: " + strings.TrimSpace(lines[len(lines)-1])
+		return "The engine stopped: " + cleanLogLine(lines[len(lines)-1])
 	}
 	return "The engine stopped without saying why."
+}
+
+var (
+	ansiCodes = regexp.MustCompile(`\x1b\[[0-9;]*m`)
+	// "[E] error: ...", "error: ...", "main: error: ..."
+	errorLine = regexp.MustCompile(`(?i)^\[E\]\s|\berror:\s`)
+	badOption = regexp.MustCompile(`(?i)unknown argument|invalid parameter for argument|unrecognized option|unknown option`)
+)
+
+// cleanLogLine drops terminal colors and the "[E]" level tag.
+func cleanLogLine(line string) string {
+	line = strings.TrimSpace(ansiCodes.ReplaceAllString(line, ""))
+	return strings.TrimSpace(strings.TrimPrefix(line, "[E]"))
+}
+
+// lastErrorLine finds the last line that reports an error, so that a
+// help screen printed after it doesn't hide it.
+func lastErrorLine(logText string) string {
+	lines := strings.Split(logText, "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		if line := strings.TrimSpace(ansiCodes.ReplaceAllString(lines[i], "")); errorLine.MatchString(line) {
+			return cleanLogLine(line)
+		}
+	}
+	return ""
+}
+
+// isSettingsError says whether the engine refused its options, which
+// trying again on the processor won't fix.
+func isSettingsError(logText string) bool {
+	return badOption.MatchString(lastErrorLine(logText))
 }
 
 // ringLog keeps the last lines the engine printed.
@@ -402,7 +440,7 @@ func (l *ringLog) Write(p []byte) (int, error) {
 	l.part = parts[len(parts)-1]
 	for _, line := range parts[:len(parts)-1] {
 		line = strings.TrimRight(line, "\r")
-		if offloadLine.MatchString(line) {
+		if offloadLine.MatchString(line) || (len(l.keep) < 20 && errorLine.MatchString(ansiCodes.ReplaceAllString(line, ""))) {
 			l.keep = append(l.keep, line)
 		}
 		l.lines = append(l.lines, line)

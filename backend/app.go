@@ -105,6 +105,13 @@ func Start(a *App, ctx context.Context, emit func(event string, data any)) error
 	cleanupPending(p.Pending)
 	cleanupVoice(p.Voice)
 	a.upd = newUpdater(a)
+	go func() {
+		select {
+		case <-time.After(5 * time.Second):
+			a.updateOldTools()
+		case <-ctx.Done():
+		}
+	}()
 	if UpdateRepo != "" && !isDevVersion(Version) && os.Getenv("PHOENIX_NO_UPDATE") == "" {
 		go a.upd.loop(ctx)
 	}

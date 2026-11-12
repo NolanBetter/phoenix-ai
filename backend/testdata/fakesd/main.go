@@ -25,9 +25,45 @@ type job struct {
 	canceled bool
 }
 
+// The options Phoenix uses, as sd-server master-1088-32d516c defines them
+// (examples/common/common.cpp and examples/server/runtime.cpp): true if the
+// option takes a value. Like the real one, anything else prints an error and
+// the help text, then exits. Check this list against the source of the
+// pinned version whenever Phoenix passes a new option or the version changes.
+var options = map[string]bool{
+	"--listen-ip": true, "--listen-port": true, "--model-dir": true,
+	"-m": true, "--vae": true, "--diffusion-model": true, "--t5xxl": true,
+	"--cfg-scale": true, "--steps": true, "--sampling-method": true, "--flow-shift": true,
+	"--backend": true, "--vae-tiling": false, "--offload-to-cpu": false,
+}
+
+func checkArgs(args []string) {
+	if f := os.Getenv("FAKE_SD_LAUNCHES"); f != "" {
+		fh, _ := os.OpenFile(f, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+		fmt.Fprintln(fh, "start")
+		fh.Close()
+	}
+	for i := 0; i < len(args); i++ {
+		takesValue, ok := options[args[i]]
+		if !ok || args[i] == os.Getenv("FAKE_SD_REJECT") {
+			fmt.Fprintf(os.Stderr, "[E] common.cpp:353 - error: unknown argument: %s\n", args[i])
+			fmt.Println("Usage: sd-server [options]\n\nSvr Options:\n  -l, --listen-ip <string>   server listen ip (default: 127.0.0.1)")
+			for j := 0; j < 150; j++ {
+				fmt.Printf("  --option-%d                 an option\n", j)
+			}
+			fmt.Println("  --negative-prompt-file     path to the file containing the negative prompt")
+			os.Exit(1)
+		}
+		if takesValue {
+			i++
+		}
+	}
+}
+
 func main() {
 	port := ""
 	args := os.Args[1:]
+	checkArgs(args)
 	for i := 0; i < len(args)-1; i++ {
 		if args[i] == "--listen-port" {
 			port = args[i+1]

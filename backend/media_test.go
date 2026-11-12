@@ -401,6 +401,70 @@ func TestMediaStopAndFallback(t *testing.T) {
 	}
 }
 
+// An engine that refuses one of Phoenix's options says which one, and
+// Phoenix doesn't pointlessly retry on the processor.
+func TestMediaEngineRefusesOption(t *testing.T) {
+	a, rec, _ := setupApp(t)
+	t.Setenv("PHOENIX_SD_SERVER", buildFake(t, "fakesd"))
+	launches := filepath.Join(t.TempDir(), "launches")
+	t.Setenv("FAKE_SD_LAUNCHES", launches)
+	t.Setenv("FAKE_SD_REJECT", "--model-dir")
+	model := installPictures(t, a)
+
+	n := rec.count()
+	if _, err := a.MakeMedia("", "a lighthouse", model, MediaOptions{}, nil); err != nil {
+		t.Fatal(err)
+	}
+	d := rec.waitDone(t, n)
+	if !strings.Contains(d.Message.Error, "didn't accept one of Phoenix's settings") || !strings.Contains(d.Message.Error, "unknown argument: --model-dir") {
+		t.Errorf("error: %q", d.Message.Error)
+	}
+	if b, _ := os.ReadFile(launches); strings.Count(string(b), "start") != 1 {
+		t.Errorf("started %d times, want 1", strings.Count(string(b), "start"))
+	}
+}
+
+// After an update changes an engine's version, the new one is fetched for
+// models that need it.
+func TestOldToolsAreNoticed(t *testing.T) {
+	a, _, _ := setupApp(t)
+	sd := mustTool(toolPictures)
+	if a.needsTool(toolPictures) || a.hasOldTool(sd) {
+		t.Fatal("nothing installed yet")
+	}
+	os.MkdirAll(filepath.Join(a.paths.Tools, "sd-master-920-2f88688"), 0o755)
+	os.MkdirAll(filepath.Join(a.paths.Tools, "speech-v0.3.0.tmp"), 0o755)
+	installPictures(t, a)
+	if !a.needsTool(toolPictures) || !a.hasOldTool(sd) {
+		t.Error("the picture engine is out of date")
+	}
+	if a.needsTool(toolSpeech) || a.hasOldTool(mustTool(toolSpeech)) {
+		t.Error("nothing needs the speech engine, and a .tmp folder isn't an install")
+	}
+}
+
+func TestFriendlyEngineError(t *testing.T) {
+	usage := "\x1b[31;1m[E]\x1b[0m common.cpp:353 - error: unknown argument: --model-dir\nUsage: sd-server [options]\n  --negative-prompt-file  path to the file"
+	if got := friendlyEngineError(usage); !strings.Contains(got, "(common.cpp:353 - error: unknown argument: --model-dir)") {
+		t.Errorf("usage: %q", got)
+	}
+	if got := friendlyEngineError("loading\n[E] error: failed to read the file\ndone"); got != "The engine stopped: error: failed to read the file" {
+		t.Errorf("error line: %q", got)
+	}
+	if got := friendlyEngineError("just\nthe last line"); got != "The engine stopped: the last line" {
+		t.Errorf("last line: %q", got)
+	}
+	// An error line is kept even after lots of output scrolls it away.
+	l := newRingLog(5)
+	fmt.Fprintln(l, "error: unknown argument: --nope")
+	for i := 0; i < 50; i++ {
+		fmt.Fprintln(l, "  --option  help text")
+	}
+	if !isSettingsError(l.String()) {
+		t.Errorf("lost the error line: %q", l.String())
+	}
+}
+
 // fakeHub stands in for Hugging Face and GitHub downloads.
 type fakeHub struct {
 	srv   *httptest.Server

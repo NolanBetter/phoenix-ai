@@ -23,7 +23,10 @@ import (
 //
 // Their versions are pinned and checked against a SHA-256, because Phoenix
 // talks to them through their command-line options and APIs, which can
-// change between versions.
+// change between versions. When changing a version, check every option and
+// API call Phoenix uses against that release's source, not the latest code
+// (sd-server's --model-dir and /sdcpp/v1/models/status, for example, don't
+// exist in older releases).
 
 type toolAsset struct {
 	URL    string
@@ -63,12 +66,12 @@ func getTool(key string) (toolSpec, bool) {
 
 var tools = map[string]toolSpec{
 	toolPictures: {
-		Key: toolPictures, Name: "Picture and video engine", Version: "master-920-2f88688",
+		Key: toolPictures, Name: "Picture and video engine", Version: "master-1088-32d516c",
 		Exe: "sd-server", Env: "PHOENIX_SD_SERVER",
 		Assets: map[string]toolAsset{
 			// Vulkan runs on NVIDIA, AMD and Intel graphics cards, and falls back to the processor.
-			"windows/amd64": {"https://github.com/leejet/stable-diffusion.cpp/releases/download/master-920-2f88688/sd-master-2f88688-bin-win-vulkan-x64.zip", 31998883, "63e84439c20dde75487a933066318ae01353e9e80ee70e031acad48e857e1cb9"},
-			"linux/amd64":   {"https://github.com/leejet/stable-diffusion.cpp/releases/download/master-920-2f88688/sd-master-2f88688-bin-Linux-Ubuntu-24.04-x86_64.zip", 25529878, "7367e4034a77a425aaa7d0795e02b6007329a58a893541c9fd6a4c79c196796b"},
+			"windows/amd64": {"https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1088-32d516c/sd-master-32d516c-bin-win-vulkan-x64.zip", 30031373, "956853799eb2af71a02c8088ac88ad96978cda902277de75feef8dcf918e7dfc"},
+			"linux/amd64":   {"https://github.com/leejet/stable-diffusion.cpp/releases/download/master-1088-32d516c/sd-master-32d516c-bin-Linux-Ubuntu-26.04-x86_64.zip", 29033492, "b8b160ebe5dcc0fb701428a04896fe5d25ff834609f4fd5429cc7bc21b5edfc0"},
 		},
 	},
 	toolSpeech: {
@@ -235,4 +238,42 @@ func (d *downloadManager) installTool(ctx context.Context, j *dlJob, t toolSpec,
 		}
 	}
 	return nil
+}
+
+// updateOldTools downloads the new version of any engine that's installed
+// in an older version and still needed by a downloaded model, so it's
+// ready after Phoenix updates instead of waiting for the next try.
+func (a *App) updateOldTools() {
+	for _, key := range []string{toolPictures, toolSpeech, toolVoice} {
+		t, ok := getTool(key)
+		if !ok || a.toolPath(key) != "" || !a.hasOldTool(t) || !a.needsTool(key) {
+			continue
+		}
+		_ = a.ensureTool(key)
+	}
+}
+
+func (a *App) hasOldTool(t toolSpec) bool {
+	entries, err := os.ReadDir(a.paths.Tools)
+	if err != nil {
+		return false
+	}
+	for _, en := range entries {
+		if en.IsDir() && strings.HasPrefix(en.Name(), t.Key+"-") && en.Name() != filepath.Base(t.dir(a)) && !strings.HasSuffix(en.Name(), ".tmp") {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) needsTool(key string) bool {
+	for _, c := range catalog {
+		if toolForKind(c.kindOf()) != key {
+			continue
+		}
+		if p, ok := safeJoin(a.paths.Models, modelID(c.Repo, c.File)); ok && fileExists(p) {
+			return true
+		}
+	}
+	return false
 }

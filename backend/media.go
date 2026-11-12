@@ -234,7 +234,7 @@ func (m *mediaRunner) ensure(ctx context.Context, model CatalogModel, path strin
 	status("Loading " + model.Name + ". The first time takes a minute or two.")
 	base, err := m.start(ctx, exe, model, path, cpu, key)
 	note := ""
-	if err != nil && !cpu && ctx.Err() == nil {
+	if err != nil && !cpu && ctx.Err() == nil && !isSettingsError(m.lastLog()) {
 		gpuErr := err
 		status("Your graphics card couldn't load it. Trying the processor instead…")
 		base, err = m.start(ctx, exe, model, path, true, key)
