@@ -64,21 +64,40 @@
     ["gpt-oss-20b", "gpt-oss", "OpenAI", "20B", "OpenAI's open model. Always reasons step by step before it answers.", 11624759488, ["Smart", "Always thinks"]],
     ["qwen3-coder-30b", "Qwen 3 Coder", "Alibaba", "30B", "Built for writing and fixing code. Quick for its size because only part of it runs at once.", 17665334432, ["Coding"]],
     ["qwen3.8-27b", "Qwen 3.8", "Alibaba", "27B", "Very capable for hard questions. Needs a high-end graphics card or lots of memory.", 16464440224, ["Smartest", "Can think", "Sees images"]],
+    ["qwen3-coder-next", "Qwen 3 Coder Next", "Alibaba", "80B", "The best open coding model that can run at home. Writes, fixes and explains code across whole projects. Needs about 40 GB of memory (graphics card plus system memory).", 38429272064, ["Best for coding", "Big"]],
+    ["sdxl", "Stable Diffusion XL", "Stability AI", "3.5B", "Makes pictures from a description: photos, art, logos, anything. Can also redo a picture you add.", 6938078334, ["Makes pictures", "Big"], "image", [334641162]],
+    ["wan2.2-5b", "Wan 2.2 Video", "Alibaba", "5B", "Makes short videos from a description, or brings a picture you add to life. Takes a few minutes per video.", 3433116000, ["Makes videos", "Big"], "video", [3655145312, 1409400960]],
+    ["nemotron-asr", "Speech recognition", "NVIDIA", "0.6B", "Lets Phoenix understand what you say and what's in audio files. Works in 40+ languages.", 741548352, ["Understands speech"], "listen"],
+    ["nemotron-diarization", "Speaker detection", "NVIDIA", "0.1B", "Tells apart who is talking in audio files, up to 8 people, so transcripts say who said what.", 107012128, ["Who's talking"], "speakers"],
+    ["kokoro", "Kokoro voice", "hexgrad", "82M", "A natural-sounding voice, so Phoenix can read answers aloud and talk back to you.", 132353410, ["Talks back"], "voice"],
   ];
-  const installedIds = sc.noModels ? [] : sc.full ? ["qwen3.5-0.8b", "qwen3.5-2b", "qwen3.5-4b", "gemma-4-e4b", "gpt-oss-20b"] : ["qwen3.5-4b", "gpt-oss-20b"];
-  const catalog = () => cat.map(([id, name, maker, params, description, size, tags]) => ({
-    id, name, maker, params, description, size, tags, repo: "unsloth/" + id, file: id + ".gguf", license: "Apache 2.0",
-    installed: installedIds.includes(id), installedId: installedIds.includes(id) ? "unsloth__" + id + "/" + id + ".gguf" : "", fit: fit(size),
-  }));
+  const installedIds = sc.noModels ? [] : sc.full ? ["qwen3.5-0.8b", "qwen3.5-2b", "qwen3.5-4b", "gemma-4-e4b", "gpt-oss-20b"] : ["qwen3.5-4b", "gpt-oss-20b", "sdxl", "wan2.2-5b", "nemotron-asr", "kokoro"];
+  const fitKind = (kind, size) => {
+    if (kind === "listen" || kind === "speakers" || kind === "voice") return { level: "great", label: "Runs on your processor" };
+    const f = fit(size);
+    if (kind === "image" || kind === "video") return f.level === "great" ? { level: "great", label: "Runs well on your graphics card" } : f.level === "toobig" ? f : { level: "slow", label: "Works, but takes a while on this PC" };
+    return f;
+  };
+  const catalog = () => cat.map(([id, name, maker, params, description, size, tags, kind, parts]) => {
+    const totalSize = size + (parts || []).reduce((a, b) => a + b, 0);
+    return {
+      id, name, maker, params, description, size, tags, repo: "unsloth/" + id, file: id + ".gguf", license: "Apache 2.0", kind: kind || "chat",
+      parts: (parts || []).map((sz, i) => ({ role: "part", name: "Part " + (i + 1), size: sz })), totalSize,
+      installed: installedIds.includes(id), installedId: installedIds.includes(id) ? "unsloth__" + id + "/" + id + ".gguf" : "", fit: fitKind(kind, totalSize),
+    };
+  });
   const seesImages = ["qwen3.5-0.8b", "qwen3.5-2b", "qwen3.5-4b", "gemma-4-e4b", "qwen3.5-9b", "gemma-4-12b", "qwen3.8-27b"];
   const visionOn = new Set(["qwen3.5-4b", "qwen3.5-0.8b", "qwen3.5-2b"]);
   const installed = () => catalog().filter((c) => c.installed).map((c) => ({
     id: c.installedId, name: c.name, maker: c.maker, params: c.params, description: c.description, repo: c.repo, file: c.file,
-    quant: "Q4_K_M", size: c.size, catalogId: c.id, fit: c.fit,
+    quant: c.kind === "chat" ? "Q4_K_M" : "", size: c.totalSize, catalogId: c.id, fit: c.fit, kind: c.kind,
+    ready: !(sc.unready && c.kind === "video"), missing: sc.unready && c.kind === "video" ? "Video decoder for Wan 2.2" : "",
     vision: visionOn.has(c.id), visionAvailable: seesImages.includes(c.id) && !visionOn.has(c.id), visionSize: 990372672,
   }));
+  const voices = [["af_heart", "Heart", "American"], ["af_bella", "Bella", "American"], ["am_michael", "Michael", "American"], ["bf_emma", "Emma", "British"], ["bm_george", "George", "British"]].map(([id, name, accent]) => ({ id, name, accent }));
   const now = Date.now(), day = 86400000;
   const chats = sc.noModels ? [] : [
+    { id: "a7", title: "Cozy cabin in the snow", updated: now - 300e3 },
     { id: "a0", title: "Turn my sketch into a web page", updated: now - 600e3 },
     { id: "a1", title: "Paper plugin for a parkour timer", updated: now - 3600e3 },
     { id: "a2", title: "Why is the sky orange at sunset?", updated: now - 5 * 3600e3, unread: true },
@@ -161,6 +180,25 @@
         content: "Here's a page that matches your sketch: a glowing sun, dark mountains along the bottom, and a line of text that fades in.\n\n```html\n" + pageHTML + "\n```\n\nSave it as `index.html` and open it in your browser. The sun's glow is the `glow` animation, so change `4s` to make it pulse faster or slower." },
     ],
   };
+  const cabinId = newId(".png");
+  files[cabinId] = drawPicture(1024, 1024, (g, w, h) => {
+    const sky = g.createLinearGradient(0, 0, 0, h);
+    sky.addColorStop(0, "#1b2340"); sky.addColorStop(0.55, "#d9654b"); sky.addColorStop(1, "#f4c27a");
+    g.fillStyle = sky; g.fillRect(0, 0, w, h);
+    g.fillStyle = "#eef2f7";
+    g.beginPath(); g.moveTo(0, h * 0.62); g.lineTo(w * 0.3, h * 0.35); g.lineTo(w * 0.55, h * 0.6); g.lineTo(w * 0.78, h * 0.4); g.lineTo(w, h * 0.6); g.lineTo(w, h); g.lineTo(0, h); g.fill();
+    g.fillStyle = "#f7f9fc"; g.fillRect(0, h * 0.78, w, h * 0.22);
+    g.fillStyle = "#5a3424"; g.fillRect(w * 0.36, h * 0.6, w * 0.28, h * 0.2);
+    g.fillStyle = "#3a2018"; g.beginPath(); g.moveTo(w * 0.33, h * 0.61); g.lineTo(w * 0.5, h * 0.48); g.lineTo(w * 0.67, h * 0.61); g.fill();
+    g.fillStyle = "#ffcf6e"; g.fillRect(w * 0.41, h * 0.66, w * 0.06, h * 0.06); g.fillRect(w * 0.53, h * 0.66, w * 0.06, h * 0.06);
+  });
+  const cabinConvo = {
+    id: "a7", title: "Cozy cabin in the snow", created: now - 360e3, updated: now - 300e3,
+    messages: [
+      { role: "user", content: "A cozy wooden cabin in snowy mountains at sunset, warm light in the windows, oil painting", time: now - 360e3 },
+      { role: "assistant", modelName: "Stable Diffusion XL", time: now - 300e3, content: "", media: [{ id: cabinId, kind: "image", width: 1024, height: 1024, seed: 42, shape: "square", seconds: 38.4 }] },
+    ],
+  };
   let engine = sc.noEngine ? { installed: false, version: "", busy: false, stage: "", received: 0, total: 0, error: "" } : { installed: true, version: "b11669", busy: false };
   const downloads = sc.downloading ? [
     { id: "unsloth__qwen3.5-9b/qwen3.5-9b.gguf", catalogId: "qwen3.5-9b", name: "Qwen 3.5 Plus", repo: "unsloth/Qwen3.5-9B-GGUF", file: "x", received: 2.1 * GB, total: 5680522464, speed: 38 * 2 ** 20, status: "downloading" },
@@ -205,7 +243,7 @@
       { file: "Llama-3.2-3B-Instruct-f16.gguf", size: 6.43 * GB, quant: "F16", fit: fit(6.43 * GB), installed: false, recommended: false },
     ]),
     ListChats: () => P(chats.map((c) => ({ ...c, unread: !!c.unread && c.id !== viewing.id }))),
-    GetChat: (id) => P(id === "a0" ? sketchConvo : id === "a1" ? convo : { id, title: (chats.find((c) => c.id === id) || {}).title || "x", messages: [{ role: "user", content: "Hi!" }, { role: "assistant", content: "Hello! What can I help with?", modelName: "Qwen 3.5" }] }),
+    GetChat: (id) => P(id === "a7" ? cabinConvo : id === "a0" ? sketchConvo : id === "a1" ? convo : { id, title: (chats.find((c) => c.id === id) || {}).title || "x", messages: [{ role: "user", content: "Hi!" }, { role: "assistant", content: "Hello! What can I help with?", modelName: "Qwen 3.5" }] }),
     SetViewingChat: (id) => {
       viewing.id = id;
       const c = chats.find((x) => x.id === id);
@@ -228,6 +266,37 @@
     OpenDataFolder: () => P(),
     Regenerate: () => P(),
     SetWindowActive: () => P(),
+    GetSpeechStatus: () => P({ listen: !sc.noVoice, speakers: false, voice: !sc.noVoice, listenMb: 707, voiceMb: 126 }),
+    GetVoices: () => P(voices),
+    GetVoiceReady: () => P(),
+    Speak: () => P(""),
+    ForgetSpeech: () => P(),
+    Transcribe: () => new Promise((res) => later(600, () => res("What's a good name for a pet dragon?"))),
+    TranscribeAttachment: (id) => new Promise((res) => later(900, () => {
+      files[id] = "[0:00] Speaker 1: Okay, let's start the meeting.\n\n[0:04] Speaker 2: Sounds good.";
+      res({ id, name: "team-meeting.mp3", kind: "audio", audio: "x.mp3", size: 3.2e6, chars: 74, duration: 204, speakers: 2 });
+    })),
+    SaveMedia: () => P("C:\\Users\\you\\Pictures\\Phoenix 2026-11-11 19.02.10.png"),
+    SendVoiceMessage: (chatId, text, model) => window.go.backend.App.SendMessage(chatId, text, model, false, []),
+    MakeMedia: (chatId, prompt, model, opts) => {
+      const id = chatId || "m" + Date.now();
+      if (!chatId) chats.unshift({ id, title: prompt.slice(0, 40), updated: Date.now() });
+      const video = /wan/.test(model);
+      later(10, () => emit("chat:start", { chatId: id, modelId: model, modelName: video ? "Wan 2.2 Video" : "Stable Diffusion XL", kind: video ? "video" : "image" }));
+      let t = 50;
+      const total = 20;
+      later(t, () => emit("media:progress", { chatId: id, stage: "loading", label: "Loading Stable Diffusion XL. The first time takes a minute or two." }));
+      for (let i = 1; i <= total; i++) {
+        later((t += sc.slow ? 700 : 90), () => emit("media:progress", { chatId: id, stage: "sampling", label: video ? "Making your video" : "Making your picture", completed: i, total, elapsedMs: i * 1900,
+          preview: i % 2 ? files[cabinId] : undefined }));
+      }
+      later(t + 100, () => {
+        emit("chat:done", { chatId: id, message: { role: "assistant", content: "", modelName: video ? "Wan 2.2 Video" : "Stable Diffusion XL", media: [{ id: cabinId, kind: "image", width: 1024, height: 1024, seed: 7, shape: opts.shape || "square", seconds: 41.2 }] } });
+        emit("chats:changed");
+      });
+      later(5, () => emit("chats:changed"));
+      return P(id);
+    },
     AddImageSupport: () => P(),
     PickFiles: () => P(["C:\\Users\\you\\Documents\\Lab report.pdf", "C:\\Users\\you\\Projects\\site\\script.js"]),
     AddAttachmentFromPath: (path) => new Promise((res) => later(500, () => {
@@ -244,6 +313,7 @@
     AddAttachmentData: (name, data) => {
       const id = newId(data.startsWith("data:image") ? ".jpg" : ".txt");
       files[id] = data;
+      if (/\.(mp3|wav|m4a)$/i.test(name)) return P({ id, name, kind: "audio", audio: id, size: 3.2e6, transcribing: false, duration: 204, speakers: 2, chars: 74 });
       return P(data.startsWith("data:image")
         ? { id, name, kind: "image", size: data.length * 0.75, width: 1280, height: 720 }
         : { id, name, kind: "text", size: data.length * 0.75, chars: Math.round(data.length * 0.75) });

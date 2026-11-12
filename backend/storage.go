@@ -16,6 +16,8 @@ type Paths struct {
 	Chats   string
 	Updates string
 	Pending string // files added to the message box but not sent yet
+	Tools   string // engines for pictures, video and voice
+	Voice   string // spoken answers, cleared on each start
 }
 
 func resolvePaths() (*Paths, error) {
@@ -38,8 +40,10 @@ func resolvePaths() (*Paths, error) {
 		Chats:   filepath.Join(root, "chats"),
 		Updates: filepath.Join(root, "updates"),
 		Pending: filepath.Join(root, "pending"),
+		Tools:   filepath.Join(root, "tools"),
+		Voice:   filepath.Join(root, "voice"),
 	}
-	for _, d := range []string{p.Root, p.Models, p.Engine, p.Chats, p.Updates, p.Pending} {
+	for _, d := range []string{p.Root, p.Models, p.Engine, p.Chats, p.Updates, p.Pending, p.Tools, p.Voice} {
 		if err := os.MkdirAll(d, 0o755); err != nil {
 			return nil, err
 		}
@@ -49,14 +53,16 @@ func resolvePaths() (*Paths, error) {
 
 // Settings are saved to settings.json.
 type Settings struct {
-	UseGPU        bool   `json:"useGPU"`
-	ContextSize   int    `json:"contextSize"`
-	SystemPrompt  string `json:"systemPrompt"`
-	Thinking      bool   `json:"thinking"`
-	LastModel     string `json:"lastModel"`
-	Theme         string `json:"theme"`
-	AutoUpdate    bool   `json:"autoUpdate"`
-	Notifications bool   `json:"notifications"`
+	UseGPU        bool    `json:"useGPU"`
+	ContextSize   int     `json:"contextSize"`
+	SystemPrompt  string  `json:"systemPrompt"`
+	Thinking      bool    `json:"thinking"`
+	LastModel     string  `json:"lastModel"`
+	Theme         string  `json:"theme"`
+	AutoUpdate    bool    `json:"autoUpdate"`
+	Notifications bool    `json:"notifications"`
+	Voice         string  `json:"voice"`      // Kokoro voice name, like af_heart
+	VoiceSpeed    float64 `json:"voiceSpeed"` // 1 is normal
 
 	// Managed by Phoenix, not the user.
 	EngineTag string      `json:"engineTag"`
@@ -73,7 +79,7 @@ type WindowState struct {
 }
 
 func defaultSettings() Settings {
-	return Settings{UseGPU: true, ContextSize: 8192, Theme: "system", AutoUpdate: true, Notifications: true}
+	return Settings{UseGPU: true, ContextSize: 8192, Theme: "system", AutoUpdate: true, Notifications: true, Voice: "af_heart", VoiceSpeed: 1}
 }
 
 // SavedWindowState reads the window size from settings.json before the

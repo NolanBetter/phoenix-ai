@@ -42,6 +42,8 @@ type App struct {
 	http   *http.Client
 	engine *engineManager
 	runner *runner
+	media  *mediaRunner  // pictures and videos (stable-diffusion.cpp)
+	speech *speechRunner // speech recognition (NeMo-Speech.cpp)
 	dl     *downloadManager
 	chats  *chatStore
 
@@ -66,9 +68,10 @@ type App struct {
 // Hooks are the window features the backend uses. main.go fills them in
 // with Wails; tests leave them empty.
 type Hooks struct {
-	Quit      func()                   // close the window (to restart for an update)
-	PickFiles func() ([]string, error) // Windows' open-file dialog
-	Focus     func()                   // bring the window to the front
+	Quit      func()                            // close the window (to restart for an update)
+	PickFiles func() ([]string, error)          // Windows' open-file dialog
+	Focus     func()                            // bring the window to the front
+	SaveFile  func(name string) (string, error) // Windows' save-file dialog
 }
 
 // NewApp creates the app. Call Start before using it.
@@ -95,9 +98,12 @@ func Start(a *App, ctx context.Context, emit func(event string, data any)) error
 	a.http = &http.Client{Timeout: 0} // downloads can take a long time; requests use contexts
 	a.engine = newEngineManager(a)
 	a.runner = newRunner(a)
+	a.media = newMediaRunner(a)
+	a.speech = newSpeechRunner(a)
 	a.dl = newDownloadManager(a)
 	a.chats = newChatStore(p.Chats)
 	cleanupPending(p.Pending)
+	cleanupVoice(p.Voice)
 	a.upd = newUpdater(a)
 	if UpdateRepo != "" && !isDevVersion(Version) && os.Getenv("PHOENIX_NO_UPDATE") == "" {
 		go a.upd.loop(ctx)
@@ -113,6 +119,12 @@ func Stop(a *App) {
 	}
 	if a.runner != nil {
 		a.runner.stop()
+	}
+	if a.media != nil {
+		a.media.stop()
+	}
+	if a.speech != nil {
+		a.speech.stop()
 	}
 	if a.upd != nil {
 		a.upd.installOnExit()
@@ -164,6 +176,12 @@ func (a *App) SaveSettings(in Settings) (Settings, error) {
 		s.Notifications = in.Notifications
 		if in.Theme == "dark" || in.Theme == "light" || in.Theme == "system" {
 			s.Theme = in.Theme
+		}
+		if _, ok := kokoroVoices[in.Voice]; ok {
+			s.Voice = in.Voice
+		}
+		if in.VoiceSpeed >= 0.7 && in.VoiceSpeed <= 1.5 {
+			s.VoiceSpeed = in.VoiceSpeed
 		}
 	})
 	return a.getSettings(), err

@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"bytes"
+	"compress/bzip2"
 	"compress/gzip"
 	"errors"
 	"fmt"
@@ -12,7 +13,7 @@ import (
 	"path/filepath"
 )
 
-// extractArchive unpacks a .zip or .tar.gz into dst. Every path is
+// extractArchive unpacks a .zip, .tar.gz or .tar.bz2 into dst. Every path is
 // checked so a bad archive can't write outside dst.
 func extractArchive(src, dst string) error {
 	f, err := os.Open(src)
@@ -30,6 +31,8 @@ func extractArchive(src, dst string) error {
 		return extractZip(src, dst)
 	case bytes.HasPrefix(head, []byte{0x1f, 0x8b}):
 		return extractTarGz(src, dst)
+	case bytes.HasPrefix(head, []byte("BZh")):
+		return extractTarBz2(src, dst)
 	default:
 		return errors.New("unknown archive format")
 	}
@@ -79,7 +82,19 @@ func extractTarGz(src, dst string) error {
 		return err
 	}
 	defer gz.Close()
-	tr := tar.NewReader(gz)
+	return extractTar(tar.NewReader(gz), dst)
+}
+
+func extractTarBz2(src, dst string) error {
+	f, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	return extractTar(tar.NewReader(bzip2.NewReader(f)), dst)
+}
+
+func extractTar(tr *tar.Reader, dst string) error {
 	for {
 		h, err := tr.Next()
 		if err == io.EOF {

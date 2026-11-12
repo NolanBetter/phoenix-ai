@@ -2,6 +2,17 @@
 
 Each section here becomes the release notes on GitHub, and the "What's new" text Phoenix shows when an update is ready.
 
+## 0.4.0
+
+- **Make pictures and videos.** Download Stable Diffusion XL (pictures) or Wan 2.2 (short videos) on the Models page, pick it in the model menu, and describe what you want. Choose square, wide or tall, and 2 to 5 seconds for videos. Add a picture with **+** to redo it or bring it to life. Save what you make with the download button.
+- **Talk to Phoenix.** The voice chat button opens a conversation where Phoenix listens, answers, and talks back. Tap the circle to interrupt it.
+- **Speak instead of typing** with the microphone button, and have any answer **read aloud** with the speaker button. Pick the voice and speed in Settings.
+- **Add audio files** with **+**: MP3, WAV, M4A and more. Phoenix writes them down so you can ask about them. With Speaker detection downloaded, it also marks who said what.
+- **Qwen 3 Coder Next**, the best open coding model that runs at home. It's big: about 40 GB of memory.
+- Phoenix asks before a download that would use more than a quarter of your free space.
+- Speech recognition, speaker detection and the Kokoro voice don't count toward the 5-model limit.
+- Fixed: downloads that failed showed as paused, and a stray "null" in Settings.
+
 ## 0.3.0
 
 - Add files to a message with the **+** button, by dropping them on the window, or by pasting a screenshot: pictures, PDFs, Word documents, and text or code files.

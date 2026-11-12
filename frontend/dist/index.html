@@ -73,7 +73,10 @@
               <button type="button" class="think-toggle" id="thinkToggle" aria-pressed="false" title="Let the model reason before it answers. Slower, but better for hard questions.">
                 <span data-icon="spark"></span>Think first
               </button>
+              <div class="media-opts" id="mediaOpts" hidden></div>
               <span class="composer-hint" id="composerHint"></span>
+              <button type="button" class="mic-btn" id="micBtn" aria-label="Speak your message" title="Speak your message"><span data-icon="mic"></span><span class="mic-time" id="micTime"></span></button>
+              <button type="button" class="talk-btn" id="talkBtn" aria-label="Talk with Phoenix" title="Talk with Phoenix out loud"><span data-icon="waves"></span></button>
               <button type="submit" class="send" id="sendBtn" aria-label="Send"><span data-icon="send"></span></button>
             </div>
           </form>
@@ -83,7 +86,7 @@
           <div class="drop-card">
             <span data-icon="attach"></span>
             <strong>Drop to add to your message</strong>
-            <span>Pictures, PDFs, Word documents and code</span>
+            <span>Pictures, PDFs, Word documents, code and audio</span>
           </div>
         </div>
       </section>
@@ -138,6 +141,22 @@
         <button class="btn" id="dialogCancel">Cancel</button>
         <button class="btn btn-danger" id="dialogOk">Delete</button>
       </div>
+    </div>
+  </div>
+
+  <div class="voice" id="voice" role="dialog" aria-modal="true" aria-label="Voice chat" hidden>
+    <div class="voice-stage">
+      <button class="voice-orb" id="voiceOrb" aria-label="Tap to interrupt">
+        <span class="orb-ring"></span><span class="orb-core" data-icon="phoenix"></span>
+      </button>
+      <p class="voice-state" id="voiceState" aria-live="polite">Listening…</p>
+      <p class="voice-said" id="voiceSaid"></p>
+      <p class="voice-reply" id="voiceReply"></p>
+    </div>
+    <div class="voice-bar">
+      <span class="voice-model" id="voiceModel"></span>
+      <button class="btn" id="voiceMute" aria-pressed="false"><span data-icon="mic"></span><span>Mute</span></button>
+      <button class="btn btn-end" id="voiceEnd"><span data-icon="x"></span>End</button>
     </div>
   </div>
 

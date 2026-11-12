@@ -69,11 +69,34 @@ func (a *App) GetModelStatus() ModelStatus {
 // LoadModel starts loading a model in the background so the first answer
 // comes faster. Progress arrives as "model:status" events.
 func (a *App) LoadModel(id string) error {
-	if _, err := a.modelPath(id); err != nil {
+	path, err := a.modelPath(id)
+	if err != nil {
 		return err
 	}
 	_ = a.updateSettings(func(s *Settings) { s.LastModel = id })
-	go a.runner.ensure(a.ctx, id)
+	switch a.modelKind(id) {
+	case KindChat:
+		go a.runner.ensure(a.ctx, id)
+	case KindImage, KindVideo:
+		// Get the picture engine ready, unless something is being made.
+		if a.generating() {
+			return nil
+		}
+		model, _, err := a.mediaModel(id)
+		if err != nil {
+			return err
+		}
+		go func() {
+			name := a.modelName(id)
+			a.runner.setStatus(ModelStatus{State: "loading", ModelID: id, Name: name})
+			_, note, err := a.media.ensure(a.ctx, model, path, func(string) {})
+			if err != nil {
+				a.runner.setStatus(ModelStatus{State: "error", ModelID: id, Name: name, Error: err.Error()})
+				return
+			}
+			a.runner.setStatus(ModelStatus{State: "ready", ModelID: id, Name: name, OnGPU: !a.media.onCPU(), Note: note})
+		}()
+	}
 	return nil
 }
 
@@ -135,6 +158,8 @@ func (r *runner) ensure(ctx context.Context, id string) (string, error) {
 	r.stop()
 	r.setStatus(ModelStatus{State: "loading", ModelID: id, Name: name})
 
+	// Free the graphics card from the picture engine.
+	r.a.media.stop()
 	try := cfg
 	base, onGPU, note, err := r.start(ctx, try, id)
 	if err != nil && try.GPU && ctx.Err() == nil {

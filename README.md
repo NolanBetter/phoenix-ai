@@ -1,6 +1,6 @@
 # Phoenix AI
 
-Run open-source AI models on your own Windows PC. Pick a model, Phoenix downloads it, and you chat with it. Nothing you type leaves the computer.
+Run open-source AI models on your own Windows PC. Pick a model, Phoenix downloads it, and you chat with it, have it make pictures and short videos, or talk to it out loud. Nothing you type or say leaves the computer.
 
 **[Download the latest installer](https://github.com/NolanBetter/phoenix-ai/releases/latest)** (`PhoenixAI-Setup-<version>.exe`). It installs just for you, with no administrator prompt, and updates itself after that.
 
@@ -9,9 +9,13 @@ Run open-source AI models on your own Windows PC. Pick a model, Phoenix download
 ## How it works
 
 - **The engine** is [llama.cpp](https://github.com/ggml-org/llama.cpp)'s `llama-server`. On first launch Phoenix downloads the official Windows Vulkan build from GitHub. Vulkan runs on NVIDIA, AMD and Intel graphics cards, and falls back to the processor when there isn't one.
-- **Models** are GGUF files from Hugging Face. There's a curated list (Qwen 3.5, Gemma 4, gpt-oss and more), plus search for anything else on Hugging Face. Downloads resume if interrupted and are checked against Hugging Face's SHA-256 checksum. Phoenix keeps up to 5 models and 10 chats (`MaxModels` and `MaxChats` in `backend/app.go`).
+- **Models** come from Hugging Face. There's a curated list (Qwen 3.5, Gemma 4, gpt-oss, Qwen 3 Coder Next and more), plus search for any other GGUF chat model. Downloads resume if interrupted and are checked against Hugging Face's SHA-256 checksum. Phoenix keeps up to 5 models and 10 chats (`MaxModels` and `MaxChats` in `backend/app.go`). The voice helpers below don't count toward the 5.
+- **Big downloads**: if a download would take more than a quarter of the free space on the drive, Phoenix asks first.
 - **Running a model**: Phoenix starts `llama-server` hidden in the background on a random local port with a random per-run key, and llama.cpp fits the model to your graphics card's memory automatically. If the graphics card can't load it, Phoenix retries on the processor. The engine is tied to Phoenix with a Windows job object, so it closes when Phoenix closes, even after a crash.
 - **Files in chats**: the + button (or dropping files on the window, or pasting a screenshot) adds pictures, PDFs, Word documents and text or code files to a message, up to 10 at a time. Phoenix keeps its own copy in the chat's folder. Pictures are shrunk to 1280 pixels and sent as images to models that can see (the ones marked "Sees images", which download a small image-support file next to the model); everything else is turned into text the model reads.
+- **Pictures and videos**: pick Stable Diffusion XL or Wan 2.2 in the model menu and describe what you want. These run on [stable-diffusion.cpp](https://github.com/leejet/stable-diffusion.cpp)'s `sd-server` (Vulkan build), downloaded the first time you get one of these models, along with the parts each model needs (a picture decoder for SDXL; a text reader and video decoder for Wan). Only one of `llama-server` and `sd-server` runs at a time, since both want the graphics card. Add a picture with the + button to redo it (SDXL) or bring it to life (Wan). Pictures save as PNG and videos as WebM.
+- **Voice**: the microphone button turns what you say into text in the message box, and the voice chat button opens a full-screen conversation where Phoenix listens, answers, and speaks the answer back. Any answer can also be read aloud. Speech recognition is NVIDIA's [Nemotron 3.5 ASR](https://huggingface.co/nvidia/nemotron-3.5-asr-streaming-0.6b) running on [NeMo-Speech.cpp](https://github.com/NVIDIA/NeMo-Speech.cpp); the voice is [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) (sherpa-onnx's int8 ONNX conversion) running on [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx). Both run on the processor, so they don't compete with the chat model for the graphics card. Pick the voice and speed in Settings.
+- **Audio files**: add MP3, WAV, M4A, OGG, Opus, FLAC or AAC files with the + button, up to 30 minutes each. Phoenix writes them down with speech recognition, and if [Nemotron 3 Diarization](https://huggingface.co/nvidia/Nemotron-3-Diarization) is downloaded it also marks who's talking ("Speaker 1", "Speaker 2"), so you can ask for a meeting summary.
 - **Code answers**: HTML and SVG code shows a live preview when the answer is finished, with a switch between Preview and Code and a full-screen view. Previews run in a locked-down sandbox that can't reach Phoenix or your files.
 - **Notifications**: when an answer or download finishes while you're in another window, Phoenix shows a Windows notification (named "Phoenix AI") and flashes its taskbar button. Clicking the notification opens the chat. You can turn this off in Settings.
 - **The window** draws its own title bar. It opens maximized the first time and remembers its size after that, and never opens bigger than the screen.
@@ -21,10 +25,14 @@ Run open-source AI models on your own Windows PC. Pick a model, Phoenix download
 ```
 PhoenixAI\
   engine\b11669\llama-server.exe (+ DLLs)
+  tools\sd-<version>\      (picture and video engine)
+  tools\speech-<version>\  (speech recognition engine)
+  tools\voice-<version>\   (the engine that speaks)
   models\unsloth__Qwen3.5-4B-GGUF\Qwen3.5-4B-Q4_K_M.gguf
   chats\<id>.json
   chats\<id>\          (pictures and files added to that chat)
   pending\            (files added to the message box but not sent yet)
+  voice\              (spoken answers, cleared when Phoenix starts)
   updates\            (a downloaded update waiting to install)
   webview\            (the window's browser cache)
   settings.json
@@ -59,6 +67,10 @@ backend/                Everything behind the window, no Wails imports
   app.go                App struct bound to JavaScript, start/stop, limits
   engine.go             Finds and installs llama.cpp from GitHub releases
   runner.go             Starts/stops llama-server, health checks, GPU fallback
+  tools.go              Downloads the picture, speech and voice engines
+  media.go              Pictures and videos with sd-server
+  speech.go             Speech recognition and speaker detection
+  voice.go              Reading answers aloud with Kokoro
   chat.go               Chats on disk, streaming answers, thinking, unread
   attach.go             Files in messages: pictures, PDFs, Word, text and code
   notify.go             Windows notifications and taskbar flashing
@@ -68,7 +80,7 @@ backend/                Everything behind the window, no Wails imports
   catalog.go            Recommended models and the "will it run" estimate
   sysinfo.go            RAM, graphics cards (via llama-server --list-devices)
   platform_windows.go   Hidden console window, job object, RAM, disk, installer launch
-  *_test.go             Tests (a fake llama-server and fake GitHub)
+  *_test.go             Tests (fake llama-server, sd-server, speech engines and GitHub)
 frontend/dist/          The UI: plain HTML, CSS and JavaScript, no build step
 frontend/dev/           Browser preview with a fake backend
 build/installer/        The NSIS installer script and its picture
@@ -96,7 +108,7 @@ Both write `build\PhoenixAI.exe` and `build\PhoenixAI-Setup-<version>.exe`. The 
 
 ## Working on the UI
 
-Open `frontend/dist/index.html` straight from disk in Chrome or Edge to see the UI with fake data (from `frontend/dev/mock.js`), no Go needed. Add `?scenario=` with any of `noEngine`, `noModels`, `potato`, `downloading`, `slow`, `light`, `full` (10 chats and 5 models), `update` (an update is ready) or `restored` (window not maximized) to the address. Combine them with commas.
+Open `frontend/dist/index.html` straight from disk in Chrome or Edge to see the UI with fake data (from `frontend/dev/mock.js`), no Go needed. Add `?scenario=` with any of `noEngine`, `noModels`, `potato`, `downloading`, `slow`, `light`, `full` (10 chats and 5 models), `update` (an update is ready) or `restored` (window not maximized), `unready` (a model still missing a part) or `noVoice` (voice features not downloaded) to the address. Combine them with commas.
 
 ## Tests
 
@@ -104,6 +116,8 @@ Open `frontend/dist/index.html` straight from disk in Chrome or Edge to see the 
 go test ./backend/
 PHOENIX_NET_TEST=1 go test -run Real ./backend/    # real Hugging Face download, about 500 MB
 ```
+
+The tests use small fake engines. To point Phoenix at real ones instead, set `PHOENIX_SD_SERVER`, `PHOENIX_NEMO_SPEECH` or `PHOENIX_SHERPA_TTS` to the program's path.
 
 To try pictures with the real engine, point the test at a folder with `Qwen3.5-0.8B-Q4_K_M.gguf` and `mmproj-F16.gguf` and at a `llama-server`:
 
@@ -121,11 +135,12 @@ Every exported method on `backend.App` is available as `window.go.backend.App.<M
 | `download:progress` | Model download progress, done, paused or error |
 | `models:changed` | A model was added or deleted |
 | `model:status` | A model is loading, ready, or failed |
-| `chat:start`, `chat:delta`, `chat:done` | An answer starts, streams in, finishes |
+| `chat:start`, `chat:delta`, `chat:done` | An answer starts, streams in, finishes (`chat:start` says whether it's text, a picture or a video) |
+| `media:progress` | Steps and a preview while a picture or video is being made |
 | `chats:changed` | The chat list changed (including unread dots) |
 | `update:status` | Checking for, downloading, or ready to install an update |
 | `notify:open` | A Windows notification was clicked (`chat:<id>` or `models`) |
 
 ## Licenses
 
-llama.cpp (MIT) is downloaded at runtime. Bundled: marked (MIT), DOMPurify (Apache 2.0 / MPL 2.0), Bricolage Grotesque (SIL Open Font License), Wails (MIT), go-toast (MIT / Unlicense) for notifications, ledongthuc/pdf (BSD) for reading PDFs, and golang.org/x/image (BSD). Their license files are in `frontend/dist/vendor/`. Each model keeps its own license; the recommended ones are all Apache 2.0.
+Downloaded when first needed: llama.cpp (MIT), stable-diffusion.cpp (MIT), NeMo-Speech.cpp (Apache 2.0) and sherpa-onnx (Apache 2.0). Bundled: marked (MIT), DOMPurify (Apache 2.0 / MPL 2.0), Bricolage Grotesque (SIL Open Font License), Wails (MIT), go-toast (MIT / Unlicense) for notifications, ledongthuc/pdf (BSD) for reading PDFs, and golang.org/x/image (BSD). Their license files are in `frontend/dist/vendor/`. Each model keeps its own license: most recommended ones are Apache 2.0; Stable Diffusion XL uses the CreativeML Open RAIL++-M license, the NVIDIA speech models use the NVIDIA Open Model License, and Wan 2.2 and Kokoro are Apache 2.0.

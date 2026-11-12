@@ -33,6 +33,7 @@ type Message struct {
 	Stopped      bool         `json:"stopped,omitempty"`
 	Error        string       `json:"error,omitempty"`
 	Time         int64        `json:"time"`
+	Media        []Media      `json:"media,omitempty"` // pictures or videos Phoenix made
 }
 
 // Chat is a saved conversation (chats/<id>.json).
@@ -225,6 +226,18 @@ type generation struct {
 // box. The answer streams in as "chat:delta" events and finishes with
 // "chat:done". Returns the chat ID.
 func (a *App) SendMessage(chatID, text, modelID string, think bool, attachmentIDs []string) (string, error) {
+	return a.sendMessage(chatID, text, modelID, think, attachmentIDs, false)
+}
+
+// SendVoiceMessage is SendMessage for voice chat: the model is asked to
+// answer briefly, in plain spoken sentences, since the answer is read aloud.
+func (a *App) SendVoiceMessage(chatID, text, modelID string) (string, error) {
+	return a.sendMessage(chatID, text, modelID, false, nil, true)
+}
+
+const voiceHint = "The user is talking with you out loud, and your answer will be read aloud. Answer in a few short, natural spoken sentences. Don't use markdown, lists, tables, headings, emoji or code unless they ask for it."
+
+func (a *App) sendMessage(chatID, text, modelID string, think bool, attachmentIDs []string, voice bool) (string, error) {
 	text = strings.TrimSpace(text)
 	if text == "" && len(attachmentIDs) == 0 {
 		return "", errors.New("type a message first")
@@ -235,6 +248,9 @@ func (a *App) SendMessage(chatID, text, modelID string, think bool, attachmentID
 	path, err := a.modelPath(modelID)
 	if err != nil {
 		return "", err
+	}
+	if kind := a.modelKind(modelID); kind != KindChat {
+		return "", fmt.Errorf("%s doesn't chat. Pick a chat model to send messages", a.modelName(modelID))
 	}
 	if a.generating() {
 		return "", errors.New("wait for the current answer to finish, or stop it first")
@@ -278,7 +294,7 @@ func (a *App) SendMessage(chatID, text, modelID string, think bool, attachmentID
 	}
 	_ = a.updateSettings(func(s *Settings) { s.LastModel = modelID; s.Thinking = think })
 	a.emit("chats:changed", nil)
-	a.startGeneration(ch, modelID, think)
+	a.startGeneration(ch, modelID, think, voice)
 	return ch.ID, nil
 }
 
@@ -312,7 +328,15 @@ func (a *App) checkImages(modelID, path string, files []Attachment) error {
 	return nil
 }
 
-// Regenerate writes a new answer to the last message in a chat.
+func systemFor(prompt string, voice bool) string {
+	if !voice {
+		return prompt
+	}
+	return strings.TrimSpace(prompt + "\n\n" + voiceHint)
+}
+
+// Regenerate writes a new answer to the last message in a chat. With a
+// picture or video model it makes another one (the earlier one is kept).
 func (a *App) Regenerate(chatID, modelID string, think bool) error {
 	if a.generating() {
 		return errors.New("wait for the current answer to finish, or stop it first")
@@ -323,6 +347,40 @@ func (a *App) Regenerate(chatID, modelID string, think bool) error {
 	ch, err := a.chats.load(chatID)
 	if err != nil {
 		return err
+	}
+	if kind := a.modelKind(modelID); kind == KindImage || kind == KindVideo {
+		model, _, err := a.mediaModel(modelID)
+		if err != nil {
+			return err
+		}
+		// Make another from the same description and choices.
+		var opts MediaOptions
+		var prompt *Message
+		for i := len(ch.Messages) - 1; i >= 0; i-- {
+			m := ch.Messages[i]
+			if m.Role == "assistant" && len(m.Media) > 0 && opts.Shape == "" {
+				opts.Shape = m.Media[0].Shape
+				if m.Media[0].Frames > 0 {
+					opts.Length = (m.Media[0].Frames - 1) / max(m.Media[0].FPS, 1)
+				}
+			}
+			if m.Role == "user" {
+				prompt = &ch.Messages[i]
+				break
+			}
+		}
+		if prompt == nil {
+			return errors.New("there's nothing to make in this chat")
+		}
+		again := *prompt
+		again.Time = time.Now().UnixMilli()
+		ch.Messages = append(ch.Messages, again)
+		if err := a.chats.save(ch); err != nil {
+			return err
+		}
+		a.emit("chats:changed", nil)
+		a.startMedia(ch, model, modelID, opts, -1)
+		return nil
 	}
 	for len(ch.Messages) > 0 && ch.Messages[len(ch.Messages)-1].Role == "assistant" {
 		ch.Messages = ch.Messages[:len(ch.Messages)-1]
@@ -337,7 +395,7 @@ func (a *App) Regenerate(chatID, modelID string, think bool) error {
 	if err := a.chats.save(ch); err != nil {
 		return err
 	}
-	a.startGeneration(ch, modelID, think)
+	a.startGeneration(ch, modelID, think, false)
 	return nil
 }
 
@@ -377,18 +435,27 @@ type chatDone struct {
 	Message Message `json:"message"`
 }
 
-func (a *App) startGeneration(ch *Chat, modelID string, think bool) {
+func (a *App) startGeneration(ch *Chat, modelID string, think, voice bool) {
+	a.startTask(ch, modelID, func(ctx context.Context) Message {
+		return a.generate(ctx, ch, modelID, think, voice)
+	})
+}
+
+// startTask runs an answer (text, a picture or a video) in the background,
+// then saves it to the chat. Only one runs at a time.
+func (a *App) startTask(ch *Chat, modelID string, work func(ctx context.Context) Message) {
 	ctx, cancel := context.WithCancel(a.ctx)
 	a.genMu.Lock()
 	a.gen = &generation{chatID: ch.ID, cancel: cancel}
 	a.genMu.Unlock()
 
 	name := a.modelName(modelID)
-	a.emit("chat:start", map[string]string{"chatId": ch.ID, "modelId": modelID, "modelName": name})
+	kind := a.modelKind(modelID)
+	a.emit("chat:start", map[string]string{"chatId": ch.ID, "modelId": modelID, "modelName": name, "kind": kind})
 
 	go func() {
 		defer cancel()
-		msg := a.generate(ctx, ch, modelID, think)
+		msg := work(ctx)
 		msg.ModelID, msg.ModelName, msg.Time = modelID, name, time.Now().UnixMilli()
 
 		// Reload in case the chat was renamed meanwhile, then append the answer.
@@ -407,7 +474,12 @@ func (a *App) startGeneration(ch *Chat, modelID string, think bool) {
 		switch {
 		case msg.Error != "":
 			a.notifyIfAway("Phoenix couldn't answer", msg.Error, "chat:"+ch.ID)
-		case !msg.Stopped:
+		case msg.Stopped:
+		case len(msg.Media) > 0 && msg.Media[0].Kind == KindVideo:
+			a.notifyIfAway("Your video is ready", "In “"+ch.Title+"”. Click to watch it.", "chat:"+ch.ID)
+		case len(msg.Media) > 0:
+			a.notifyIfAway("Your picture is ready", "In “"+ch.Title+"”. Click to see it.", "chat:"+ch.ID)
+		default:
 			body := previewText(msg.Content, 120)
 			if body == "" {
 				body = "The answer is ready."
@@ -496,6 +568,14 @@ func (t *promptTurn) cost(vision bool) int {
 func buildPrompt(system string, msgs []Message, ctxSize int, vision bool, files attachmentSource) []apiMessage {
 	var turns []promptTurn
 	for _, m := range msgs {
+		if len(m.Media) > 0 {
+			// A picture or video Phoenix made: chat models just hear about it.
+			what := "a picture"
+			if m.Media[0].Kind == KindVideo {
+				what = "a short video"
+			}
+			m.Content = "(I made " + what + " for that with " + m.ModelName + ". It's shown in the chat.)"
+		}
 		if m.Error != "" || (strings.TrimSpace(m.Content) == "" && len(m.Attachments) == 0) {
 			continue
 		}
@@ -511,6 +591,9 @@ func buildPrompt(system string, msgs []Message, ctxSize int, vision bool, files 
 			text := "(Phoenix couldn't find this file anymore.)"
 			if files != nil {
 				text = files.attachmentText(att)
+			}
+			if att.Kind == attachmentKindAudio {
+				text = "Transcript of this audio recording (" + clock(att.Duration) + " long):\n\n" + text
 			}
 			t.files = append(t.files, promptFile{name: att.Name, text: text, truncated: att.Truncated})
 		}
@@ -622,7 +705,7 @@ type ensureResult struct {
 	err  error
 }
 
-func (a *App) generate(ctx context.Context, ch *Chat, modelID string, think bool) Message {
+func (a *App) generate(ctx context.Context, ch *Chat, modelID string, think, voice bool) Message {
 	msg := Message{Role: "assistant"}
 
 	// Load the model. If the user hits Stop while it loads, stop waiting
@@ -657,7 +740,7 @@ func (a *App) generate(ctx context.Context, ch *Chat, modelID string, think bool
 	}
 	body := map[string]any{
 		"model":                "phoenix",
-		"messages":             buildPrompt(s.SystemPrompt, ch.Messages, s.ContextSize, vision, chatFiles{a, ch.ID}),
+		"messages":             buildPrompt(systemFor(s.SystemPrompt, voice), ch.Messages, s.ContextSize, vision, chatFiles{a, ch.ID}),
 		"stream":               true,
 		"chat_template_kwargs": map[string]any{"enable_thinking": think},
 	}

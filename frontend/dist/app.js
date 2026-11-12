@@ -45,6 +45,12 @@ const ICONS = {
   attach: () => STROKE("M20 11.5l-8.3 8.3a5 5 0 0 1-7.1-7.1l8.6-8.6a3.4 3.4 0 0 1 4.8 4.8l-8.6 8.6a1.7 1.7 0 0 1-2.4-2.4l7.9-7.9"),
   expand: () => STROKE("M14 4h6v6M10 20H4v-6M20 4l-6.5 6.5M4 20l6.5-6.5"),
   image: () => STROKE("M4 17l4.5-4.5 3.5 3.5 2.5-2.5L20 19", '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="9" r="1.6"/>'),
+  film: () => STROKE("M7 4v16M17 4v16M3 9h4M3 15h4M17 9h4M17 15h4", '<rect x="3" y="4" width="18" height="16" rx="2"/>'),
+  mic: () => STROKE("M12 18v3M8 21h8M5 11a7 7 0 0 0 14 0", '<rect x="9" y="3" width="6" height="11" rx="3"/>'),
+  volume: () => STROKE("M4 9h4l5-4v14l-5-4H4zM16.5 8.5a5 5 0 0 1 0 7M19 6a8.5 8.5 0 0 1 0 12"),
+  waves: () => STROKE("M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4"),
+  save: () => STROKE("M12 4v10M7.5 9.5L12 14l4.5-4.5M5 16v3h14v-3"),
+  audio: () => STROKE("M9 18V6l10-2v12", '<circle cx="6.5" cy="18" r="2.5"/><circle cx="16.5" cy="16" r="2.5"/>'),
   phoenix: phoenixSVG,
 };
 
@@ -71,6 +77,9 @@ function h(tag, attrs = {}, ...children) {
   return el;
 }
 const ic = (name) => h("span", { "data-icon": name, html: icon(name) });
+
+// "Video decoder for Wan 2.2" → "video decoder for Wan 2.2"
+const lowerFirst = (t) => (t ? t[0].toLowerCase() + t.slice(1) : "");
 
 function fmtBytes(n) {
   if (!n || n < 0) return "0 MB";
@@ -196,7 +205,16 @@ const state = {
   viewingSent: null,
   pending: [], // files added to the message box: {key, loading, ...Attachment}
   codeModes: new Map(), // "chat:msg:block" -> "preview" | "code"
+  speech: { listen: false, speakers: false, voice: false, listenMb: 0, voiceMb: 0 },
+  mediaOpts: { shape: "", length: 2 },
+  voices: [],
 };
+
+// What a model does: chat, image, video, listen, speakers or voice.
+const kindOf = (m) => (m && m.kind) || "chat";
+const isMediaKind = (k) => k === "image" || k === "video";
+const pickable = (m) => ["chat", "image", "video"].includes(kindOf(m));
+const KIND_LABEL = { image: "Makes pictures", video: "Makes videos", listen: "Understands speech", speakers: "Who's talking", voice: "Talks back" };
 
 // ---------- limits ----------
 
@@ -204,9 +222,16 @@ const maxChats = () => state.info?.maxChats || 10;
 const maxModels = () => state.info?.maxModels || 5;
 const chatsFull = () => state.chats.length >= maxChats();
 const isVisionFile = (id) => /mmproj/i.test(id.split("/").pop());
+// Chat, picture and video models count toward the limit; image support,
+// parts, engines and the small voice helpers don't.
 function modelSlotsUsed() {
-  const ids = new Set(state.installed.map((m) => m.id));
-  Object.keys(state.downloads).forEach((id) => { if (!isVisionFile(id)) ids.add(id); });
+  const counts = (kind) => ["chat", "image", "video"].includes(kind || "chat");
+  const ids = new Set(state.installed.filter((m) => counts(m.kind)).map((m) => m.id));
+  for (const d of Object.values(state.downloads)) {
+    if (d.tool || d.part || isVisionFile(d.id) || d.status === "error") continue;
+    const c = state.catalog.find((m) => m.id === d.catalogId);
+    if (c ? counts(c.kind) : true) ids.add(d.id);
+  }
   return ids.size;
 }
 const modelsFull = () => modelSlotsUsed() >= maxModels();
@@ -239,12 +264,14 @@ darkQuery.addEventListener("change", applyTheme);
 // ---------- loading data ----------
 
 async function refreshModels() {
-  const [catalog, installed] = await Promise.all([api().GetCatalog(), api().GetInstalledModels()]);
+  const [catalog, installed, speech] = await Promise.all([api().GetCatalog(), api().GetInstalledModels(), api().GetSpeechStatus()]);
   state.catalog = catalog || [];
   state.installed = installed || [];
+  state.speech = speech || state.speech;
   const before = state.selected;
-  if (!state.installed.some((m) => m.id === state.selected)) {
-    state.selected = state.installed.length ? state.installed[0].id : null;
+  const choices = state.installed.filter(pickable);
+  if (!choices.some((m) => m.id === state.selected)) {
+    state.selected = (choices.find((m) => kindOf(m) === "chat") || choices[0] || {}).id || null;
   }
   // First model just arrived: load it so the first answer is quick.
   if (state.selected && state.selected !== before && !state.gen && state.modelStatus.state !== "loading" && document.body.dataset.booted) {
@@ -439,10 +466,25 @@ const SUGGESTIONS = [
   ["Help with code", "Help me find the bug in this code:\n\n"],
 ];
 
+const MEDIA_SUGGESTIONS = {
+  image: [
+    ["Cozy cabin", "A cozy wooden cabin in snowy mountains at sunset, warm light in the windows, oil painting"],
+    ["Product photo", "A glass bottle of orange soda on a wet rock, studio lighting, photo"],
+    ["Game art", "A tiny pixel-art dragon guarding a pile of gold coins, 16-bit style"],
+    ["Logo idea", "A simple flat logo of a phoenix made of flames, orange and red, white background"],
+  ],
+  video: [
+    ["Ocean waves", "Slow waves rolling onto a sandy beach at golden hour, gentle camera pan"],
+    ["City at night", "A rainy city street at night with neon signs reflecting in puddles, cars driving by"],
+    ["Cute cat", "A fluffy orange cat stretching and yawning on a sunny windowsill"],
+    ["Campfire", "A crackling campfire in a dark forest, sparks drifting up into the night sky"],
+  ],
+};
+
 function renderStarter() {
   const box = $("#starter");
   box.textContent = "";
-  if (!state.installed.length) {
+  if (!state.installed.filter(pickable).length) {
     $("#subline").textContent = "Everything you ask stays on this PC.";
     const m = suggestedModel();
     if (!m) return;
@@ -475,8 +517,12 @@ function renderStarter() {
     ));
     return;
   }
+  const kind = kindOf(selectedModel());
+  $("#subline").textContent = kind === "image" ? "Describe a picture and Phoenix will make it, right on this PC."
+    : kind === "video" ? "Describe a short video, or add a picture to bring to life. Videos take a few minutes."
+    : "Everything you ask stays on this PC.";
   box.append(h("div", { class: "suggestions" },
-    SUGGESTIONS.map(([label, text]) => h("button", { class: "suggestion", onclick: () => {
+    (MEDIA_SUGGESTIONS[kind] || SUGGESTIONS).map(([label, text]) => h("button", { class: "suggestion", onclick: () => {
       const inp = $("#input");
       inp.value = text;
       autosize();
@@ -666,6 +712,7 @@ function messageEl(m, isLast, index) {
     return wrap;
   }
   const wrap = h("div", { class: "msg assistant" });
+  if (m.media && m.media.length) return mediaMessageEl(m, isLast);
   if (m.thinking) wrap.append(thinkingEl(m.thinking, false));
   if (m.content) wrap.append(markdownEl(m.content, `${state.chatId}:${index}`));
   if (m.error) {
@@ -680,6 +727,7 @@ function messageEl(m, isLast, index) {
       m.modelName ? h("span", { class: "who" }, m.modelName) : null,
       m.tps ? h("span", { class: "who", title: "How fast the model wrote this answer" }, `${Math.round(m.tps)} tokens/s`) : null,
       m.content ? h("button", { class: "icon-btn", title: "Copy", "aria-label": "Copy answer", onclick: (e) => copyText(m.content, null) && flashCheck(e.currentTarget) }, ic("copy")) : null,
+      m.content ? readAloudBtn(m.content) : null,
       isLast ? h("button", { class: "icon-btn", title: "Write a new answer", "aria-label": "Retry", onclick: retry }, ic("retry")) : null,
     );
     wrap.append(meta);
@@ -702,6 +750,7 @@ function liveEl() {
 }
 
 function fillLive(wrap, g) {
+  if (isMediaKind(g.kind)) return fillMediaLive(wrap, g);
   const prev = $(".thinking", wrap);
   const prevOpen = prev ? prev.open : null;
   wrap.textContent = "";
@@ -750,6 +799,455 @@ function scrollEnd(force) {
   if (force || nearBottom()) s.scrollTop = s.scrollHeight;
 }
 
+// ---------- pictures and videos ----------
+
+const SHAPES = [["square", "Square"], ["wide", "Wide"], ["tall", "Tall"]];
+const LENGTHS = [[2, "2 s"], [3, "3 s"], [5, "5 s"]];
+
+function fmtSeconds(sec) {
+  sec = Math.round(sec);
+  return sec < 60 ? `${sec} s` : `${Math.floor(sec / 60)} min ${String(sec % 60).padStart(2, "0")} s`;
+}
+
+function mediaMessageEl(m, isLast) {
+  const media = m.media[0];
+  const url = attURL(state.chatId, media.id);
+  const wrap = h("div", { class: "msg assistant media-msg" });
+  const frame = h("div", { class: "media-frame " + media.kind, style: `aspect-ratio:${media.width} / ${media.height}` });
+  if (media.kind === "video") {
+    frame.append(h("video", { src: url, controls: true, loop: true, playsinline: true, preload: "metadata", "aria-label": "Video Phoenix made" }));
+  } else {
+    frame.append(h("button", { class: "media-open", title: "View full size", "aria-label": "View full size",
+      onclick: () => openViewer(["Picture", h("small", {}, `${media.width}×${media.height}`)], [saveBtn(media)], h("div", { class: "viewer-image" }, h("img", { src: url, alt: "Picture Phoenix made" }))) },
+      h("img", { src: url, alt: "Picture Phoenix made", loading: "lazy" })));
+  }
+  wrap.append(frame);
+  const what = media.kind === "video" ? `${Math.round((media.frames - 1) / (media.fps || 24))} s video` : "Picture";
+  wrap.append(h("div", { class: "msg-meta" },
+    m.modelName ? h("span", { class: "who" }, m.modelName) : null,
+    h("span", { class: "who" }, `${what}, made in ${fmtSeconds(media.seconds)}`),
+    saveBtn(media, true),
+    isLast ? h("button", { class: "btn btn-quiet media-again", onclick: retry }, ic("retry"), media.kind === "video" ? "Make another" : "Make another") : null,
+  ));
+  return wrap;
+}
+
+function saveBtn(media, small) {
+  const b = h("button", { class: small ? "icon-btn" : "btn", title: "Save to your PC", "aria-label": "Save to your PC" }, ic("save"), small ? null : "Save");
+  b.addEventListener("click", async () => {
+    try {
+      const where = await api().SaveMedia(state.chatId, media.id);
+      if (where) toast(`Saved to ${where}`, "info", 4000);
+    } catch (e) { toast(e); }
+  });
+  return b;
+}
+
+function fillMediaLive(wrap, g) {
+  const p = g.progress || {};
+  const video = g.kind === "video";
+  wrap.textContent = "";
+  wrap.classList.add("media-msg");
+  const ms = state.modelStatus;
+  let label = p.label || (ms.state === "loading" ? `Loading ${ms.name || "the model"}…` : "Getting started");
+  const pct = p.total ? Math.min(100, (p.completed / p.total) * 100) : null;
+  const shape = g.shape || (video ? "wide" : "square");
+  const ratio = { square: "1 / 1", wide: video ? "832 / 480" : "1216 / 832", tall: video ? "480 / 832" : "832 / 1216" }[shape];
+  const card = h("div", { class: "media-frame making", style: `aspect-ratio:${ratio}` });
+  if (p.preview) card.append(h("img", { src: p.preview, alt: "", class: "preview" }));
+  card.append(h("div", { class: "making-info" },
+    h("div", { class: "making-label" }, h("span", { class: "spinner" }), label),
+    pct !== null ? h("div", { class: "bar", role: "progressbar", "aria-valuemin": "0", "aria-valuemax": "100", "aria-valuenow": String(Math.round(pct)) }, h("span", { style: `width:${pct}%` })) : null,
+    h("div", { class: "making-time" }, [p.total ? `Step ${p.completed} of ${p.total}` : null, p.elapsedMs ? fmtSeconds(p.elapsedMs / 1000) : null].filter(Boolean).join(", ")),
+  ));
+  wrap.append(card);
+}
+
+function renderMediaOpts() {
+  const box = $("#mediaOpts");
+  const kind = kindOf(selectedModel());
+  box.hidden = !isMediaKind(kind);
+  $("#thinkToggle").hidden = isMediaKind(kind);
+  box.textContent = "";
+  if (!isMediaKind(kind)) return;
+  const shape = state.mediaOpts.shape || (kind === "video" ? "wide" : "square");
+  box.append(segmented(SHAPES, shape, (v) => { state.mediaOpts.shape = v; }, "Shape"));
+  if (kind === "video") box.append(segmented(LENGTHS, state.mediaOpts.length, (v) => { state.mediaOpts.length = v; }, "Length"));
+}
+
+// ---------- read aloud ----------
+
+let speaking = null; // {audio, btn, url}
+function stopSpeaking() {
+  if (!speaking) return;
+  speaking.audio.pause();
+  if (speaking.btn) speaking.btn.classList.remove("on");
+  api().ForgetSpeech(speaking.url).catch(() => {});
+  speaking = null;
+}
+
+function readAloudBtn(text) {
+  const b = h("button", { class: "icon-btn read-aloud", title: "Read aloud", "aria-label": "Read aloud" }, ic("volume"));
+  b.addEventListener("click", async () => {
+    if (speaking && speaking.btn === b) return stopSpeaking();
+    stopSpeaking();
+    if (!state.speech.voice) return offerVoice("read");
+    b.classList.add("on", "busy");
+    try {
+      const url = await api().Speak(text);
+      b.classList.remove("busy");
+      if (!b.classList.contains("on")) return api().ForgetSpeech(url);
+      const audio = new Audio(url);
+      speaking = { audio, btn: b, url };
+      audio.onended = () => { if (speaking && speaking.audio === audio) stopSpeaking(); };
+      await audio.play();
+    } catch (e) {
+      b.classList.remove("on", "busy");
+      toast(e);
+    }
+  });
+  return b;
+}
+
+// Offer to download what voice features need.
+async function offerVoice(why) {
+  const sp = state.speech;
+  const parts = [];
+  if (why !== "read" && !sp.listen) parts.push(`speech recognition (${fmtBytes(sp.listenMb * 2 ** 20)})`);
+  if (why !== "listen" && !sp.voice) parts.push(`the Kokoro voice (${fmtBytes(sp.voiceMb * 2 ** 20)})`);
+  const title = why === "read" ? "Get a voice for Phoenix?" : why === "talk" ? "Get voice chat?" : "Get speech recognition?";
+  const body = `Phoenix needs ${parts.join(" and ")} for this. They run on your processor and everything stays on this PC.`;
+  const ok = await confirmDialog({ title, body, ok: "Download", danger: false });
+  if (!ok) return;
+  try {
+    if (why === "read") await api().DownloadModel(state.catalog.find((m) => m.kind === "voice").id);
+    else if (why === "listen") await api().DownloadModel(state.catalog.find((m) => m.kind === "listen").id);
+    else await api().GetVoiceReady();
+    toast("Downloading. You'll find it on the Models page.", "info", 4000);
+    refreshDownloads();
+  } catch (e) { toast(e); }
+}
+
+// ---------- audio: recording, decoding, voice chat ----------
+
+// 16 kHz mono 16-bit WAV, as base64 (what the speech engine wants).
+function wavBase64(samples, rate) {
+  const buf = new ArrayBuffer(44 + samples.length * 2);
+  const v = new DataView(buf);
+  const str = (o, t) => [...t].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  str(0, "RIFF"); v.setUint32(4, 36 + samples.length * 2, true); str(8, "WAVEfmt ");
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, "data"); v.setUint32(40, samples.length * 2, true);
+  for (let i = 0; i < samples.length; i++) {
+    const x = Math.max(-1, Math.min(1, samples[i]));
+    v.setInt16(44 + i * 2, x < 0 ? x * 0x8000 : x * 0x7fff, true);
+  }
+  return readAsDataURL(new Blob([buf], { type: "audio/wav" }));
+}
+
+// Any audio file the window can play (MP3, M4A, OGG, FLAC, WAV...) to 16 kHz WAV.
+async function audioFileToWav(arrayBuffer) {
+  const ctx = new OfflineAudioContext(1, 1, 16000);
+  let buf;
+  try { buf = await ctx.decodeAudioData(arrayBuffer); } catch { throw new Error("Phoenix couldn't play that audio file. Try MP3, WAV, M4A, OGG or FLAC."); }
+  if (buf.duration > 30 * 60 + 5) throw new Error("Audio can be up to 30 minutes long.");
+  const mono = new Float32Array(buf.length);
+  for (let c = 0; c < buf.numberOfChannels; c++) {
+    const d = buf.getChannelData(c);
+    for (let i = 0; i < d.length; i++) mono[i] += d[i] / buf.numberOfChannels;
+  }
+  return wavBase64(mono, buf.sampleRate);
+}
+
+function to16k(chunks, rate) {
+  const total = chunks.reduce((a, c) => a + c.length, 0);
+  const all = new Float32Array(total);
+  let o = 0;
+  for (const c of chunks) { all.set(c, o); o += c.length; }
+  if (rate === 16000) return all;
+  const ratio = rate / 16000;
+  const out = new Float32Array(Math.floor(total / ratio));
+  for (let i = 0; i < out.length; i++) {
+    // Average the samples that fall into this one (a simple low-pass).
+    const a = Math.floor(i * ratio), b = Math.min(total, Math.floor((i + 1) * ratio));
+    let sum = 0;
+    for (let j = a; j < b; j++) sum += all[j];
+    out[i] = sum / Math.max(1, b - a);
+  }
+  return out;
+}
+
+// openMic starts listening. onFrame(level, chunk) gets each ~85 ms of sound.
+async function openMic(onFrame) {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } });
+  const ctx = new AudioContext();
+  const src = ctx.createMediaStreamSource(stream);
+  const node = ctx.createScriptProcessor(4096, 1, 1);
+  node.onaudioprocess = (e) => {
+    const d = new Float32Array(e.inputBuffer.getChannelData(0));
+    let sum = 0;
+    for (let i = 0; i < d.length; i++) sum += d[i] * d[i];
+    onFrame(Math.sqrt(sum / d.length), d);
+  };
+  src.connect(node);
+  node.connect(ctx.destination); // needed for it to run; it outputs silence
+  return {
+    rate: ctx.sampleRate,
+    close() {
+      node.onaudioprocess = null;
+      try { src.disconnect(); node.disconnect(); } catch {}
+      stream.getTracks().forEach((t) => t.stop());
+      ctx.close().catch(() => {});
+    },
+  };
+}
+
+// A small voice detector: speech starts when the sound is well above the
+// room's background noise, and ends after `quietMs` of quiet.
+function makeVAD(quietMs) {
+  let floor = 0.01, speaking = false, loud = 0, quiet = 0, frames = 0;
+  return (level, frameMs) => {
+    frames++;
+    if (!speaking) floor = frames < 4 ? Math.max(floor, level) : floor * 0.95 + Math.min(level, floor * 2) * 0.05;
+    const threshold = Math.max(0.015, floor * 2.5);
+    if (level > threshold) { loud += frameMs; quiet = 0; } else { quiet += frameMs; loud = Math.max(0, loud - frameMs / 2); }
+    if (!speaking && loud >= 200) { speaking = true; return "start"; }
+    if (speaking && quiet >= quietMs) { speaking = false; return "end"; }
+    return speaking ? "speaking" : "quiet";
+  };
+}
+
+// ----- dictation: the microphone button -----
+
+const dict = { mic: null, chunks: [], started: 0, timer: 0, heard: false };
+
+async function toggleDictation() {
+  if (dict.mic) return stopDictation(true);
+  if (!state.speech.listen) return offerVoice("listen");
+  const vad = makeVAD(2000);
+  dict.chunks = [];
+  dict.heard = false;
+  try {
+    dict.mic = await openMic((level, chunk) => {
+      dict.chunks.push(chunk);
+      const ev = vad(level, (chunk.length / (dict.mic ? dict.mic.rate : 48000)) * 1000);
+      if (ev === "start") dict.heard = true;
+      if (ev === "end" && dict.heard) stopDictation(true);
+      $("#micBtn").style.setProperty("--level", Math.min(1, level * 12).toFixed(2));
+      if (Date.now() - dict.started > 120000) stopDictation(true);
+    });
+  } catch {
+    dict.mic = null;
+    return toast("Phoenix couldn't use your microphone. Check that one is plugged in, and that Windows lets apps use it (Settings, Privacy, Microphone).");
+  }
+  dict.started = Date.now();
+  const btn = $("#micBtn");
+  btn.classList.add("rec");
+  btn.title = "Stop and write it down";
+  dict.timer = setInterval(() => { $("#micTime").textContent = fmtClock((Date.now() - dict.started) / 1000); }, 250);
+}
+
+function fmtClock(sec) {
+  sec = Math.floor(sec);
+  return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`;
+}
+
+async function stopDictation(keep) {
+  const mic = dict.mic;
+  if (!mic) return;
+  dict.mic = null;
+  mic.close();
+  clearInterval(dict.timer);
+  const btn = $("#micBtn");
+  btn.classList.remove("rec");
+  $("#micTime").textContent = "";
+  btn.title = "Speak your message";
+  if (!keep) return;
+  btn.classList.add("busy");
+  btn.disabled = true;
+  try {
+    const wav = await wavBase64(to16k(dict.chunks, mic.rate), 16000);
+    const text = await api().Transcribe(wav);
+    if (text) {
+      const input = $("#input");
+      input.value = (input.value.trim() ? input.value.trimEnd() + " " : "") + text;
+      autosize();
+      input.focus();
+      input.setSelectionRange(input.value.length, input.value.length);
+    } else {
+      toast("Phoenix didn't hear anything. Try again a little closer to the microphone.", "info", 3500);
+    }
+  } catch (e) { toast(e); }
+  btn.classList.remove("busy");
+  btn.disabled = false;
+}
+
+// ----- voice chat -----
+
+const vc = { on: false, phase: "", mic: null, chunks: [], vad: null, heard: false, queue: [], playing: false, audio: null, spoken: 0, done: false, muted: false, level: 0 };
+
+function voicePhase(p, text) {
+  vc.phase = p;
+  $("#voice").dataset.phase = p;
+  $("#voiceState").textContent = text;
+  $("#voiceOrb").setAttribute("aria-label", p === "speaking" ? "Tap to interrupt" : p === "listening" ? "Listening" : "Working");
+}
+
+async function startVoiceChat() {
+  const m = selectedModel();
+  if (!m || kindOf(m) !== "chat") return toast("Pick a chat model to talk with.", "info", 3500);
+  if (!state.speech.listen || !state.speech.voice) return offerVoice("talk");
+  if (state.gen) return toast("Wait for the current answer to finish first.", "info", 3500);
+  if (!state.chatId && chatsFull()) return toast(`You have ${maxChats()} chats already. Delete one, or open a chat to talk in it.`);
+  stopSpeaking();
+  if (dict.mic) stopDictation(false);
+  vc.on = true;
+  vc.muted = false;
+  $("#voiceSaid").textContent = "";
+  $("#voiceReply").textContent = "";
+  $("#voiceModel").textContent = `Talking with ${m.name}`;
+  $("#voiceMute").setAttribute("aria-pressed", "false");
+  $("#voice").hidden = false;
+  voicePhase("starting", "Getting ready…");
+  try {
+    vc.mic = await openMic(onVoiceFrame);
+  } catch {
+    endVoiceChat();
+    return toast("Phoenix couldn't use your microphone. Check that one is plugged in, and that Windows lets apps use it (Settings, Privacy, Microphone).");
+  }
+  voiceListen();
+}
+
+function voiceListen() {
+  if (!vc.on) return;
+  vc.chunks = [];
+  vc.heard = false;
+  vc.vad = makeVAD(1100);
+  voicePhase(vc.muted ? "muted" : "listening", vc.muted ? "Muted" : "Listening…");
+}
+
+function onVoiceFrame(level, chunk) {
+  vc.level = level;
+  $("#voice").style.setProperty("--level", Math.min(1, level * 10).toFixed(3));
+  if (vc.phase !== "listening") return;
+  vc.chunks.push(chunk);
+  // Keep a little sound from just before you started talking.
+  if (!vc.heard && vc.chunks.length > 6) vc.chunks.shift();
+  const ev = vc.vad(level, (chunk.length / vc.mic.rate) * 1000);
+  if (ev === "start") { vc.heard = true; voicePhase("listening", "Listening…"); }
+  if (ev === "end" && vc.heard) voiceHeard();
+}
+
+async function voiceHeard() {
+  voicePhase("thinking", "Thinking…");
+  const wav = await wavBase64(to16k(vc.chunks, vc.mic.rate), 16000);
+  vc.chunks = [];
+  let text = "";
+  try { text = await api().Transcribe(wav); } catch (e) { toast(e); }
+  if (!vc.on) return;
+  if (!text) return voiceListen();
+  $("#voiceSaid").textContent = text;
+  $("#voiceReply").textContent = "";
+  vc.spoken = 0;
+  vc.done = false;
+  vc.queue = [];
+  const msg = { role: "user", content: text, time: Date.now() };
+  state.messages.push(msg);
+  state.pendingNew = !state.chatId;
+  renderThread(true);
+  try {
+    const id = await api().SendVoiceMessage(state.chatId || "", text, state.selected);
+    if (!state.chatId) state.chatId = id;
+    state.pendingNew = false;
+    syncViewing();
+    renderChatList();
+  } catch (e) {
+    state.messages.splice(state.messages.indexOf(msg), 1);
+    state.pendingNew = false;
+    renderThread();
+    toast(e);
+    voiceListen();
+  }
+}
+
+// Called as the answer streams in: speak each finished stretch of sentences.
+function voiceFeed(content, done) {
+  if (!vc.on || vc.phase === "listening") return;
+  const text = content.slice(vc.spoken);
+  $("#voiceReply").textContent = previewLine(content);
+  let cut = -1;
+  const re = /[.!?…](?=\s)|\n\n/g;
+  let m;
+  const min = vc.spoken === 0 ? 30 : 140; // start talking quickly, then speak in longer pieces
+  while ((m = re.exec(text))) if (m.index + 1 >= min) { cut = m.index + 1; break; }
+  if (done) cut = text.length;
+  if (cut > 0) {
+    const piece = text.slice(0, cut).trim();
+    vc.spoken += cut;
+    if (piece) voiceSay(piece);
+  }
+  if (done) {
+    vc.done = true;
+    if (!vc.playing && !vc.queue.length) voiceListen();
+  }
+}
+
+function previewLine(md) {
+  const t = md.replace(/```[\s\S]*?(```|$)/g, " ").replace(/[#*_`>]/g, "").replace(/\s+/g, " ").trim();
+  return t.length > 220 ? "…" + t.slice(-220) : t;
+}
+
+function voiceSay(text) {
+  vc.queue.push(api().Speak(text).catch((e) => { toast(e); return null; }));
+  if (!vc.playing) voicePlay();
+}
+
+async function voicePlay() {
+  vc.playing = true;
+  voicePhase("speaking", "Speaking… Tap the circle to interrupt");
+  while (vc.on && vc.queue.length) {
+    const url = await vc.queue.shift();
+    if (!url) continue;
+    if (!vc.on || vc.phase !== "speaking") { api().ForgetSpeech(url).catch(() => {}); continue; }
+    await new Promise((resolve) => {
+      const a = new Audio(url);
+      vc.audio = a;
+      a.onended = a.onerror = resolve;
+      a.play().catch(resolve);
+    });
+    vc.audio = null;
+    api().ForgetSpeech(url).catch(() => {});
+  }
+  vc.playing = false;
+  if (vc.on && vc.done && vc.phase === "speaking") voiceListen();
+}
+
+// Tap the circle while it talks to cut in.
+function voiceInterrupt() {
+  if (!vc.on) return;
+  if (vc.phase === "speaking" || vc.phase === "thinking") {
+    if (vc.audio) vc.audio.pause();
+    vc.queue.forEach((p) => p.then((u) => u && api().ForgetSpeech(u).catch(() => {})));
+    vc.queue = [];
+    vc.playing = false;
+    if (state.gen) api().StopGeneration();
+    vc.done = true;
+    voiceListen();
+  }
+}
+
+function endVoiceChat() {
+  vc.on = false;
+  if (vc.mic) vc.mic.close();
+  vc.mic = null;
+  if (vc.audio) vc.audio.pause();
+  vc.queue = [];
+  vc.playing = false;
+  $("#voice").hidden = true;
+  $("#talkBtn").focus();
+}
+
 // ---------- files in messages ----------
 
 const maxFiles = () => state.info?.maxFiles || 10;
@@ -764,6 +1262,10 @@ function attURL(scope, id) {
 
 function attMeta(a) {
   if (a.kind === "image") return a.width ? `Picture, ${a.width}×${a.height}` : "Picture";
+  if (a.kind === "audio") {
+    if (a.transcribing) return "Audio, writing down what's said…";
+    return ["Audio", a.duration ? fmtClock(a.duration) : null, a.speakers > 1 ? `${a.speakers} people talking` : null].filter(Boolean).join(", ");
+  }
   let t;
   if (a.kind === "pdf") t = `PDF, ${a.pages} page${a.pages === 1 ? "" : "s"}`;
   else if (a.kind === "doc") t = "Word document";
@@ -787,7 +1289,12 @@ function renderAttachments() {
   box.hidden = !state.pending.length;
   for (const p of state.pending) {
     const remove = h("button", { type: "button", class: "chip-x", title: "Remove", "aria-label": `Remove ${p.name}`, onclick: () => removePending(p) }, ic("x"));
-    if (p.kind === "image" && !p.loading) {
+    if (p.kind === "audio") {
+      box.append(h("div", { class: "chip" + (p.transcribing ? " loading" : ""), title: p.name },
+        p.transcribing ? h("span", { class: "file-tile" }, h("span", { class: "spinner" })) : h("span", { class: "file-tile audio" }, ic("audio")),
+        chipText(p),
+        remove));
+    } else if (p.kind === "image" && !p.loading) {
       box.append(h("div", { class: "chip chip-img" },
         h("button", { type: "button", class: "chip-open", title: p.name, "aria-label": `View ${p.name}`, onclick: () => openImageViewer(p, "pending") },
           h("img", { src: attURL("pending", p.id), alt: "" })),
@@ -827,12 +1334,32 @@ async function addFiles(sources) {
       const att = src.path ? await api().AddAttachmentFromPath(src.path) : await api().AddAttachmentData(src.name, src.data);
       if (!state.pending.includes(p)) return api().RemovePendingAttachment(att.id).catch(() => {}); // removed while it was loading
       Object.assign(p, att, { loading: false });
+      if (att.kind === "audio" && att.transcribing) transcribePending(p);
     } catch (e) {
       state.pending = state.pending.filter((x) => x !== p);
-      toast(e);
+      if (/speech recognition/i.test(errText(e))) offerVoice("listen");
+      else toast(e);
     }
     renderAttachments();
   }));
+}
+
+// The window turns the audio into WAV; Phoenix writes down what's said.
+async function transcribePending(p) {
+  renderAttachments();
+  try {
+    const buf = await (await fetch(attURL("pending", p.audio))).arrayBuffer();
+    const wav = await audioFileToWav(buf);
+    const att = await api().TranscribeAttachment(p.id, wav);
+    if (state.pending.includes(p)) Object.assign(p, att);
+  } catch (e) {
+    if (state.pending.includes(p)) {
+      state.pending = state.pending.filter((x) => x !== p);
+      api().RemovePendingAttachment(p.id).catch(() => {});
+      toast(`${p.name}: ${errText(e)}`);
+    }
+  }
+  renderAttachments();
 }
 
 function readAsDataURL(file) {
@@ -873,9 +1400,17 @@ function sentFilesEl(m) {
       imgs.map((a) => h("button", { class: "sent-img", title: a.name, "aria-label": `View ${a.name}`, onclick: () => openImageViewer(a, scope) },
         h("img", { src: attURL(scope, a.id), alt: a.name, loading: "lazy", width: a.width || null, height: a.height || null })))));
   }
-  if (docs.length) {
+  const sounds = docs.filter((a) => a.kind === "audio");
+  const texts = docs.filter((a) => a.kind !== "audio");
+  for (const a of sounds) {
+    box.append(h("div", { class: "sent-audio" },
+      h("div", { class: "sent-audio-head" }, h("span", { class: "file-tile audio" }, ic("audio")), chipText(a),
+        h("button", { class: "btn btn-quiet", onclick: () => openTextViewer(a, scope) }, "Transcript")),
+      h("audio", { src: attURL(scope, a.audio), controls: true, preload: "none" })));
+  }
+  if (texts.length) {
     box.append(h("div", { class: "sent-docs" },
-      docs.map((a) => h("button", { class: "chip", title: `Open ${a.name}`, onclick: () => openTextViewer(a, scope) }, fileTile(a.name), chipText(a)))));
+      texts.map((a) => h("button", { class: "chip", title: `Open ${a.name}`, onclick: () => openTextViewer(a, scope) }, fileTile(a.name), chipText(a)))));
   }
   return box;
 }
@@ -935,7 +1470,7 @@ function openImageViewer(a, scope) {
 async function openTextViewer(a, scope) {
   const body = h("div", { class: "viewer-fill" }, h("div", { class: "note" }, "Opening…"));
   const copy = h("button", { type: "button", class: "btn", disabled: true }, ic("copy"), h("span", {}, "Copy text"));
-  openViewer([a.name, h("small", {}, attMeta(a) + ". This is the text the model reads.")], [copy], body);
+  openViewer([a.name, h("small", {}, attMeta(a) + (a.kind === "audio" ? ". This is what Phoenix heard." : ". This is the text the model reads."))], [copy], body);
   try {
     const text = window.__attText ? window.__attText(a.id) : await (await fetch(attURL(scope, a.id))).text();
     body.textContent = "";
@@ -966,14 +1501,24 @@ function updateComposer() {
   btn.title = busy ? "Stop" : "Send";
   const blockedNew = !state.chatId && chatsFull();
   const m = selectedModel();
-  const blind = m && !m.vision && state.pending.some((p) => p.kind === "image");
-  btn.disabled = !busy && (!state.selected || blockedNew || blind);
+  const kind = kindOf(m);
+  const media = isMediaKind(kind);
+  const blind = m && !media && !m.vision && state.pending.some((p) => p.kind === "image");
+  const notPicture = media && state.pending.some((p) => p.kind !== "image");
+  const unready = m && m.ready === false;
+  btn.disabled = !busy && (!state.selected || blockedNew || blind || notPicture || unready);
   $("#thinkToggle").setAttribute("aria-pressed", String(state.think));
-  $("#attachBtn").disabled = state.pending.length >= maxFiles();
+  $("#attachBtn").disabled = state.pending.length >= (media ? 1 : maxFiles());
+  $("#attachBtn").title = media ? "Add a picture to start from" : "Add pictures, PDFs, documents, code or audio";
+  $("#input").placeholder = kind === "image" ? "Describe the picture you want" : kind === "video" ? "Describe the video you want" : "Ask anything";
+  $("#talkBtn").hidden = media;
+  renderMediaOpts();
 
-  let hint = "Enter to send, Shift+Enter for a new line";
+  let hint = media ? "Enter to make it" : "Enter to send, Shift+Enter for a new line";
   let warn = false;
   if (!state.selected) hint = "Download a model to start chatting";
+  else if (unready) { warn = true; hint = `${m.name} isn't ready yet. Finish it on the Models page.`; }
+  else if (notPicture) { warn = true; hint = `${m.name} can only start from a picture. Remove the other files.`; }
   else if (busy && state.gen.chatId !== state.chatId) hint = "Answering in another chat. Stop it to send here.";
   else if (blockedNew) hint = `Delete a chat to start a new one (${maxChats()} max)`;
   else if (blind) {
@@ -994,7 +1539,7 @@ async function send() {
   }
   const input = $("#input");
   const text = input.value.trim();
-  if (state.pending.some((p) => p.loading)) return toast("Wait a moment, Phoenix is still reading your files.", "info", 3000);
+  if (state.pending.some((p) => p.loading || p.transcribing)) return toast("Wait a moment, Phoenix is still reading your files.", "info", 3000);
   const files = state.pending.map(({ key, loading, ...a }) => a);
   if (!text && !files.length) return;
   if (!state.selected) {
@@ -1006,6 +1551,8 @@ async function send() {
     toast(`You have ${maxChats()} chats already. Delete one to start a new chat.`);
     return;
   }
+  const kind = kindOf(selectedModel());
+  if (isMediaKind(kind) && !text) return toast("Describe what you'd like to see first.", "info", 3000);
   const isNew = !state.chatId;
   const msg = { role: "user", content: text, attachments: files, time: Date.now(), _local: true };
   const keep = state.pending;
@@ -1017,7 +1564,10 @@ async function send() {
   autosize();
   renderThread(true);
   try {
-    const id = await api().SendMessage(state.chatId || "", text, state.selected, state.think, files.map((f) => f.id));
+    const ids = files.map((f) => f.id);
+    const id = isMediaKind(kind)
+      ? await api().MakeMedia(state.chatId || "", text, state.selected, { shape: state.mediaOpts.shape, length: state.mediaOpts.length }, ids)
+      : await api().SendMessage(state.chatId || "", text, state.selected, state.think, ids);
     if (!state.chatId) state.chatId = id;
     state.pendingNew = false;
     delete msg._local; // its files now live in the chat
@@ -1039,6 +1589,11 @@ async function send() {
 async function retry() {
   if (!state.chatId || state.gen) return;
   if (!state.selected) return toast("Download a model first.");
+  if (isMediaKind(kindOf(selectedModel()))) {
+    // Make another: the earlier one stays.
+    try { await api().Regenerate(state.chatId, state.selected, false); await reloadChat(); } catch (e) { toast(e); }
+    return;
+  }
   const removed = [];
   while (state.messages.length && state.messages[state.messages.length - 1].role === "assistant") removed.unshift(state.messages.pop());
   renderThread();
@@ -1051,6 +1606,15 @@ async function retry() {
   }
 }
 
+async function reloadChat() {
+  if (!state.chatId) return;
+  try {
+    const c = await api().GetChat(state.chatId);
+    state.messages = c.messages || [];
+    renderThread(true);
+  } catch {}
+}
+
 // ---------- model picker & status ----------
 
 function selectedModel() { return state.installed.find((m) => m.id === state.selected); }
@@ -1060,17 +1624,24 @@ function renderPicker() {
   $("#pickerName").textContent = m ? m.name : state.installed.length ? "Choose a model" : "No models yet";
   const menu = $("#pickerMenu");
   menu.textContent = "";
-  for (const im of state.installed) {
-    menu.append(h("button", {
-      class: "picker-opt", role: "option", "aria-selected": String(im.id === state.selected),
-      onclick: () => pickModel(im.id),
-    },
-      h("span", { class: "n" }, im.name),
-      h("span", { class: "sz" }, fmtBytes(im.size)),
-      h("span", { class: "s" }, [im.params, im.quant, im.vision ? "sees images" : null, im.fit.label].filter(Boolean).join(", ")),
-    ));
+  const choices = state.installed.filter(pickable);
+  const groups = [["chat", "Chat"], ["image", "Pictures"], ["video", "Videos"]];
+  for (const [kind, label] of groups) {
+    const list = choices.filter((im) => kindOf(im) === kind);
+    if (!list.length) continue;
+    if (choices.some((im) => kindOf(im) !== "chat")) menu.append(h("div", { class: "picker-group" }, label));
+    for (const im of list) {
+      menu.append(h("button", {
+        class: "picker-opt", role: "option", "aria-selected": String(im.id === state.selected),
+        onclick: () => pickModel(im.id),
+      },
+        h("span", { class: "n" }, kind === "image" ? ic("image") : kind === "video" ? ic("film") : null, im.name),
+        h("span", { class: "sz" }, fmtBytes(im.size)),
+        h("span", { class: "s" }, im.ready === false ? `Still getting ready: ${im.missing}` : [im.params, im.quant, im.vision ? "sees images" : null, im.fit.label].filter(Boolean).join(", ")),
+      ));
+    }
   }
-  if (!state.installed.length) menu.append(h("div", { class: "note" }, "You haven't downloaded any models yet."));
+  if (!choices.length) menu.append(h("div", { class: "note" }, "You haven't downloaded any models yet."));
   menu.append(h("button", { class: "picker-more", onclick: () => { closePicker(); setView("models"); } }, "Get more models"));
   renderModelState();
 }
@@ -1078,9 +1649,12 @@ function renderPicker() {
 function pickModel(id) {
   closePicker();
   if (id === state.selected) return;
+  const was = kindOf(selectedModel());
   state.selected = id;
+  // Leftover files that the new kind of model can't use stay, with a hint.
   renderPicker();
   updateComposer();
+  if (kindOf(selectedModel()) !== was && !state.messages.length) renderStarter();
   if (!state.gen) api().LoadModel(id).catch(toast);
   $("#input").focus();
 }
@@ -1127,6 +1701,7 @@ function progressEl(d) {
   let left = "";
   let right = "";
   if (d.status === "verifying") left = "Checking the file…";
+  else if (d.status === "unpacking") left = "Unpacking…";
   else if (d.status === "paused") left = `Paused at ${fmtBytes(d.received)}${d.total ? " of " + fmtBytes(d.total) : ""}`;
   else {
     left = `${fmtBytes(d.received)}${d.total ? " of " + fmtBytes(d.total) : ""}`;
@@ -1171,9 +1746,11 @@ function renderDownloadSection() {
     const actions = h("div", { class: "row-side" });
     if (d.status === "paused") actions.append(h("button", { class: "btn", onclick: () => resumeDownload(d) }, "Resume"));
     if (d.status === "error") actions.append(h("button", { class: "btn", onclick: () => resumeDownload(d) }, ic("retry"), "Try again"));
+    if (d.status === "unpacking") actions.textContent = "";
     actions.append(h("button", { class: "btn btn-quiet", onclick: () => cancelDownload(d) }, d.status === "error" ? "Remove" : "Cancel"));
+    const by = d.tool ? "Runs the models" : d.part ? "Part of a model" : d.repo;
     const main = h("div", {},
-      h("div", { class: "row-title" }, h("span", { class: "n" }, d.name), h("span", { class: "by" }, d.repo)),
+      h("div", { class: "row-title" }, h("span", { class: "n" }, d.name), h("span", { class: "by" }, by)),
       d.status === "error" ? h("div", { class: "row-desc" }, d.error) : progressEl(d),
     );
     rows.append(h("div", { class: "row" }, main, actions));
@@ -1198,15 +1775,24 @@ function renderInstalledSection() {
   if (state.installed.length) {
     const rows = h("div", { class: "rows" });
     for (const m of state.installed) {
+      const kind = kindOf(m);
+      const busy = Object.values(state.downloads).some((d) => d.catalogId === m.catalogId && d.status !== "error") || Object.values(state.downloads).some((d) => d.tool && d.status !== "error");
+      const use = !pickable(m) ? null
+        : h("button", { class: "btn", disabled: m.ready === false, onclick: () => { pickModel(m.id); newChat(); } }, kind === "image" ? "Make pictures" : kind === "video" ? "Make videos" : "Chat");
       rows.append(h("div", { class: "row" },
         h("div", {},
-          h("div", { class: "row-title" }, h("span", { class: "n" }, m.name), h("span", { class: "by" }, [m.maker, m.params].filter(Boolean).join(" "))),
+          h("div", { class: "row-title" }, h("span", { class: "n" }, m.name), h("span", { class: "by" }, [m.maker, m.params].filter(Boolean).join(" ")),
+            KIND_LABEL[kind] ? h("span", { class: "tag kind" }, KIND_LABEL[kind]) : null),
           h("div", { class: "row-facts" }, heatEl(m.fit), h("span", {}, fmtBytes(m.size)), m.quant ? h("span", {}, m.quant) : null,
             m.vision ? h("span", { class: "sees" }, ic("image"), "Sees images") : null),
           m.visionAvailable ? visionOffer(m) : null,
+          m.ready === false ? h("div", { class: "vision-offer" },
+            busy ? h("span", { class: "spinner" }) : null,
+            busy ? `Downloading the ${lowerFirst(m.missing)}…` : `Still needs the ${lowerFirst(m.missing)}.`,
+            busy ? null : h("button", { class: "btn btn-quiet link", onclick: () => downloadCatalog(m.catalogId) }, ic("download"), "Finish download")) : null,
         ),
         h("div", { class: "row-side" },
-          h("button", { class: "btn", onclick: () => { pickModel(m.id); newChat(); } }, "Chat"),
+          use,
           h("button", { class: "btn btn-quiet danger", "aria-label": `Delete ${m.name}`, onclick: () => deleteModel(m) }, ic("trash"), "Delete"),
         ),
       ));
@@ -1226,7 +1812,9 @@ function visionOffer(m) {
     box.append(
       h("span", {}, "This model can see pictures with its image support."),
       h("button", { class: "btn btn-quiet link", onclick: async (e) => {
-        e.currentTarget.disabled = true;
+        const b = e.currentTarget;
+        if (!(await roomFor(m.visionSize, "Image support for " + m.name))) return;
+        b.disabled = true;
         try { await call("AddImageSupport", m.id); } catch {}
       } }, ic("image"), `Add it (${fmtBytes(m.visionSize)})`),
     );
@@ -1234,40 +1822,58 @@ function visionOffer(m) {
   return box;
 }
 
+const CATALOG_GROUPS = [
+  ["chat", "Chat models", "Open models picked for quality. The heat bars show how well each one runs on your PC."],
+  ["media", "Pictures and video", "Describe something and these make it. They need a strong graphics card to be quick."],
+  ["voice", "Voice", "Small helpers that let you talk with Phoenix, add audio files, and hear answers read aloud. They run on your processor and don't count toward your model limit."],
+];
+
+function catalogRow(m, full) {
+  const kind = kindOf(m);
+  const counts = ["chat", "image", "video"].includes(kind);
+  const dl = Object.values(state.downloads).find((d) => d.catalogId === m.id && d.status !== "error" && !d.part);
+  let side;
+  if (m.installed) side = h("span", { class: "tag hot" }, "Downloaded");
+  else if (dl) side = h("span", { class: "tag" }, dl.status === "paused" ? "Paused" : "Downloading");
+  else side = h("button", {
+    class: "btn" + (m.tags.includes("Recommended") && !full && m.fit.level !== "toobig" ? " btn-primary" : ""),
+    disabled: full && counts, title: full && counts ? fullModelsText() : null,
+    onclick: () => downloadCatalog(m.id),
+  }, ic("download"), "Download");
+  return h("div", { class: "row" },
+    h("div", {},
+      h("div", { class: "row-title" },
+        h("span", { class: "n" }, m.name),
+        h("span", { class: "by" }, `${m.maker} ${m.params}`),
+        m.tags.map((t) => h("span", { class: "tag" + (t === "Recommended" || t === "Best for coding" ? " hot" : "") }, t)),
+      ),
+      h("div", { class: "row-desc" }, m.description),
+      h("div", { class: "row-facts" }, heatEl(m.fit), h("span", {}, fmtBytes(m.totalSize || m.size)),
+        m.parts && m.parts.length ? h("span", {}, `includes ${m.parts.length === 1 ? "1 extra part" : m.parts.length + " extra parts"}`) : null),
+    ),
+    h("div", { class: "row-side" }, side),
+  );
+}
+
 function renderCatalogSection() {
   const box = $("#catalogSection");
   box.textContent = "";
-  const rows = h("div", { class: "rows" });
   const full = modelsFull();
-  for (const m of state.catalog) {
-    const dl = Object.values(state.downloads).find((d) => d.catalogId === m.id && d.status !== "error");
-    let side;
-    if (m.installed) side = h("span", { class: "tag hot" }, "Downloaded");
-    else if (dl) side = h("span", { class: "tag" }, dl.status === "paused" ? "Paused" : "Downloading");
-    else side = h("button", {
-      class: "btn" + (m.tags.includes("Recommended") && !full && m.fit.level !== "toobig" ? " btn-primary" : ""),
-      disabled: full, title: full ? fullModelsText() : null,
-      onclick: () => downloadCatalog(m.id),
-    }, ic("download"), "Download");
-    rows.append(h("div", { class: "row" },
-      h("div", {},
-        h("div", { class: "row-title" },
-          h("span", { class: "n" }, m.name),
-          h("span", { class: "by" }, `${m.maker} ${m.params}`),
-          m.tags.map((t) => h("span", { class: "tag" + (t === "Recommended" ? " hot" : "") }, t)),
-        ),
-        h("div", { class: "row-desc" }, m.description),
-        h("div", { class: "row-facts" }, heatEl(m.fit), h("span", {}, fmtBytes(m.size))),
-      ),
-      h("div", { class: "row-side" }, side),
+  for (const [group, title, sub] of CATALOG_GROUPS) {
+    const list = state.catalog.filter((m) => {
+      const k = kindOf(m);
+      return group === "chat" ? k === "chat" : group === "media" ? isMediaKind(k) : !["chat", "image", "video"].includes(k);
+    });
+    if (!list.length) continue;
+    const rows = h("div", { class: "rows" });
+    list.forEach((m) => rows.append(catalogRow(m, full)));
+    box.append(h("section", { class: "block" },
+      h("h2", {}, title),
+      h("p", { class: "block-sub" }, sub),
+      full && group !== "voice" ? h("p", { class: "limit-note" }, fullModelsText()) : null,
+      rows,
     ));
   }
-  box.append(h("section", { class: "block" },
-    h("h2", {}, "Recommended"),
-    h("p", { class: "block-sub" }, "Open models picked for quality. The heat bars show how well each one runs on your PC."),
-    full ? h("p", { class: "limit-note" }, fullModelsText()) : null,
-    rows,
-  ));
 }
 
 function renderDownloadBits() {
@@ -1288,11 +1894,30 @@ function renderDownloadBits() {
   if (!state.installed.length && $("#empty") && !$("#empty").hidden) renderStarter();
 }
 
+// Ask first when a download would use more than a quarter of the free space.
+async function roomFor(bytes, name) {
+  try { state.sys = await api().GetSystemInfo(); } catch {}
+  const free = state.sys && state.sys.diskFree;
+  if (!free || bytes <= free * 0.25) return true;
+  return confirmDialog({
+    title: "This is a big download",
+    body: `${name} needs ${fmtBytes(bytes)}. That's more than a quarter of the ${fmtBytes(free)} free on your drive. Download it anyway?`,
+    ok: "Download anyway",
+    danger: false,
+  });
+}
+
 async function downloadCatalog(id) {
+  const m = state.catalog.find((x) => x.id === id);
+  if (m && !m.installed && !(await roomFor(m.totalSize || m.size, m.name))) return;
   try { await call("DownloadModel", id); } catch {}
 }
 async function resumeDownload(d) {
-  try { await call("DownloadFromHub", d.repo, d.file); } catch {}
+  try {
+    if (d.tool || !d.repo) await call("DownloadModel", d.catalogId || state.catalog.find((m) => !m.installed && m.kind && m.kind !== "chat")?.id);
+    else if (d.catalogId && !d.part) await call("DownloadModel", d.catalogId);
+    else await call("DownloadFromHub", d.repo, d.file);
+  } catch {}
 }
 async function cancelDownload(d) {
   await api().CancelDownload(d.id).catch(toast);
@@ -1393,6 +2018,8 @@ async function toggleHub(repo) {
 }
 
 async function downloadHub(repo, file) {
+  const f = (state.hub.files[repo] || []).find((x) => x.file === file);
+  if (f && !(await roomFor(f.size, file))) return;
   try { await call("DownloadFromHub", repo, file); } catch {}
 }
 
@@ -1491,7 +2118,7 @@ function renderUpdateBlock() {
     ),
     u.state === "ready" && u.notes
       ? h("details", { class: "notes" }, h("summary", {}, ic("chevronRight"), `What's new in ${u.latest}`), markdownEl(u.notes))
-      : null,
+      : "",
   );
 }
 
@@ -1558,6 +2185,32 @@ function renderSettings() {
   });
   engineBox.append(checkBtn);
 
+  // Voice
+  const voiceSelect = h("select", { class: "select", "aria-label": "Voice" },
+    state.voices.map((v) => h("option", { value: v.id, selected: v.id === s.voice }, `${v.name} (${v.accent})`)));
+  voiceSelect.addEventListener("change", () => save({ voice: voiceSelect.value }));
+  const tryBtn = h("button", { class: "btn" }, ic("volume"), "Try it");
+  tryBtn.addEventListener("click", async () => {
+    if (!state.speech.voice) return offerVoice("read");
+    stopSpeaking();
+    tryBtn.disabled = true;
+    try {
+      const v = state.voices.find((x) => x.id === voiceSelect.value);
+      const url = await api().Speak(`Hi, I'm ${v ? v.name : "Phoenix"}. This is how I'll sound when I read answers to you.`);
+      const audio = new Audio(url);
+      speaking = { audio, btn: null, url };
+      audio.onended = () => stopSpeaking();
+      await audio.play();
+    } catch (e) { toast(e); }
+    tryBtn.disabled = false;
+  });
+  const sp = state.speech;
+  const voiceStatus = (sp.listen && sp.voice ? "Speech recognition and the Kokoro voice are ready."
+    : sp.listen ? "Speech recognition is ready. The Kokoro voice isn't downloaded yet."
+    : sp.voice ? "The Kokoro voice is ready. Speech recognition isn't downloaded yet."
+    : "Talking to Phoenix and hearing answers needs speech recognition and the Kokoro voice.")
+    + (sp.speakers ? " Speaker detection is on for audio files." : "");
+
   page.append(
     h("header", { class: "page-head" }, h("h1", {}, "Settings"), h("p", { class: "page-sub" }, "Changes save as you make them.")),
 
@@ -1576,6 +2229,22 @@ function renderSettings() {
         h("div", { class: "label" }, "Windows notifications"),
         h("div", { class: "help" }, "When you're in another window, Phoenix lets you know an answer or download is done. Click the notification to jump back."),
         h("div", { class: "control" }, sw(s.notifications !== false, (v) => save({ notifications: v }), "Windows notifications")),
+      ),
+    ),
+
+    h("section", { class: "block" },
+      h("h2", {}, "Voice"),
+      h("p", { class: "block-sub" }, voiceStatus,
+        (!sp.listen || !sp.voice) ? h("button", { class: "btn btn-quiet link", onclick: () => offerVoice("talk") }, ic("download"), "Get voice features") : null),
+      h("div", { class: "setting" },
+        h("div", { class: "label" }, "Voice"),
+        h("div", { class: "help" }, "Who reads answers aloud and talks in voice chat."),
+        h("div", { class: "control", style: "display:flex;gap:8px;align-items:center;justify-content:flex-end" }, voiceSelect, tryBtn),
+      ),
+      h("div", { class: "setting" },
+        h("div", { class: "label" }, "Speaking speed"),
+        h("div", { class: "help" }, "How fast the voice talks."),
+        h("div", { class: "control" }, seg(s.voiceSpeed || 1, [[0.85, "Slower"], [1, "Normal"], [1.2, "Faster"]], (v) => save({ voiceSpeed: v }))),
       ),
     ),
 
@@ -1713,10 +2382,19 @@ function wireEvents() {
       state.chatId = e.chatId;
       syncViewing();
     }
-    state.gen = { chatId: e.chatId, content: "", thinking: "", modelName: e.modelName };
+    state.gen = { chatId: e.chatId, content: "", thinking: "", modelName: e.modelName, kind: e.kind || "chat", shape: state.mediaOpts.shape, progress: null };
     if (e.chatId === state.chatId) renderThread(true);
     updateComposer();
     renderChatList();
+  });
+
+  on("media:progress", (p) => {
+    if (!state.gen || state.gen.chatId !== p.chatId) return;
+    const prev = state.gen.progress;
+    // Keep the last preview until a newer one arrives.
+    if (!p.preview && prev && prev.preview) p.preview = prev.preview;
+    state.gen.progress = p;
+    if (p.chatId === state.chatId) scheduleLive();
   });
 
   on("chat:delta", (d) => {
@@ -1724,10 +2402,15 @@ function wireEvents() {
     if (d.thinking) state.gen.thinking += d.thinking;
     if (d.content) state.gen.content += d.content;
     if (d.chatId === state.chatId) scheduleLive();
+    if (vc.on && d.chatId === state.chatId && d.content) voiceFeed(state.gen.content, false);
   });
 
   on("chat:done", (d) => {
     const onScreen = d.chatId === state.chatId && state.view === "chat";
+    if (vc.on && d.chatId === state.chatId) {
+      if (d.message.error) { toast(d.message.error); vc.done = true; voiceListen(); }
+      else voiceFeed(d.message.content || "", true);
+    }
     state.gen = null;
     if (d.chatId === state.chatId) {
       state.messages.push(d.message);
@@ -1737,7 +2420,8 @@ function wireEvents() {
     }
     if (!onScreen && !d.message.stopped) {
       const c = state.chats.find((x) => x.id === d.chatId);
-      if (c) toast(`New answer in “${c.title}”. Click to open it.`, "info", 6000, () => openChat(c.id));
+      const what = d.message.media && d.message.media.length ? (d.message.media[0].kind === "video" ? "Your video is ready" : "Your picture is ready") : "New answer";
+      if (c) toast(`${what} in “${c.title}”. Click to open it.`, "info", 6000, () => openChat(c.id));
     }
     updateComposer();
     renderChatList();
@@ -1841,6 +2525,16 @@ function wireUI() {
   });
   $("#composer").addEventListener("submit", (e) => { e.preventDefault(); send(); });
   $("#attachBtn").addEventListener("click", pickFiles);
+  $("#micBtn").addEventListener("click", toggleDictation);
+  $("#talkBtn").addEventListener("click", startVoiceChat);
+  $("#voiceEnd").addEventListener("click", endVoiceChat);
+  $("#voiceOrb").addEventListener("click", voiceInterrupt);
+  $("#voiceMute").addEventListener("click", (e) => {
+    vc.muted = !vc.muted;
+    e.currentTarget.setAttribute("aria-pressed", String(vc.muted));
+    $("span:last-child", e.currentTarget).textContent = vc.muted ? "Unmute" : "Mute";
+    if (vc.phase === "listening" || vc.phase === "muted") voiceListen();
+  });
   input.addEventListener("paste", (e) => {
     const files = [...((e.clipboardData && e.clipboardData.files) || [])];
     if (!files.length) return;
@@ -1864,6 +2558,8 @@ function wireUI() {
   document.addEventListener("visibilitychange", syncViewing);
   $("#updatePill").addEventListener("click", installUpdate);
   document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape" && !$("#voice").hidden && $("#dialog").hidden) { e.preventDefault(); endVoiceChat(); return; }
+    if (e.key === "Escape" && dict.mic) { e.preventDefault(); stopDictation(false); return; }
     if (e.key === "Escape" && !$("#viewer").hidden && $("#dialog").hidden) { e.preventDefault(); closeViewer(); return; }
     if (e.key === "Escape") closePicker();
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "n") { e.preventDefault(); newChat(); }
@@ -1899,6 +2595,7 @@ async function start() {
   const a = api();
   state.info = await a.GetAppInfo();
   state.settings = await a.GetSettings();
+  state.voices = (await a.GetVoices().catch(() => [])) || [];
   state.think = !!state.settings.thinking;
   applyTheme();
 

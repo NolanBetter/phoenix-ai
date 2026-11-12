@@ -374,6 +374,8 @@ body.maximised .tb-btn .i-restore { display: block; }
 .picker-opt .s { grid-column: 1 / -1; font-size: 13px; color: var(--muted); }
 .picker-opt .sz { color: var(--faint); font-size: 13px; font-variant-numeric: tabular-nums; }
 .picker-opt[aria-selected="true"] .n::after { content: "  ✓"; color: var(--ember); }
+.picker-opt .n [data-icon] svg { width: 15px; height: 15px; margin-right: 6px; vertical-align: -2px; color: var(--ember); }
+.picker-group { padding: 10px 12px 4px; font-size: 12.5px; font-weight: 600; color: var(--faint); }
 .picker-more {
   display: block;
   width: 100%;
@@ -873,6 +875,42 @@ button.chip:hover { border-color: color-mix(in srgb, var(--ember) 55%, var(--lin
 .send:disabled { background: var(--raise-2); color: var(--faint); cursor: default; }
 .send.stop { background: var(--text); color: var(--bg); }
 
+/* microphone and voice chat buttons */
+.mic-btn, .talk-btn {
+  position: relative;
+  height: 32px;
+  min-width: 32px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 0 8px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--muted);
+  flex: none;
+}
+.mic-btn [data-icon] svg, .talk-btn [data-icon] svg { width: 18px; height: 18px; }
+.mic-btn:hover, .talk-btn:hover { color: var(--text); background: var(--raise); }
+.mic-btn .mic-time:empty { display: none; }
+.mic-btn .mic-time { font-size: 13px; font-variant-numeric: tabular-nums; }
+.mic-btn.rec {
+  color: #fff;
+  background: var(--btn);
+  /* the ring grows with your voice */
+  box-shadow: 0 0 0 calc(2px + var(--level, 0) * 7px) color-mix(in srgb, var(--btn) 35%, transparent);
+  transition: box-shadow .08s linear;
+}
+.mic-btn.busy { color: var(--ember); }
+.mic-btn.busy [data-icon] { animation: pulse 1s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .35; } }
+
+/* picture and video choices next to the message box */
+.media-opts { display: flex; gap: 8px; align-items: center; }
+.media-opts .seg-mini { margin: 0; }
+.media-opts .seg-mini button { padding: 3px 11px; font-size: 13px; }
+
 /* ---------- pages (models, settings) ---------- */
 
 .view-models, .view-settings { overflow-y: auto; }
@@ -940,6 +978,7 @@ button.chip:hover { border-color: color-mix(in srgb, var(--ember) 55%, var(--lin
   line-height: 20px;
 }
 .tag.hot { color: var(--ember); border-color: color-mix(in srgb, var(--ember) 50%, transparent); }
+.tag.kind { color: var(--text); background: var(--raise-2); border-color: transparent; }
 
 /* heat meter: three flame bars for how well a model runs */
 .heat { display: inline-flex; align-items: center; gap: 8px; }
@@ -1277,6 +1316,139 @@ select.select {
 .update-text { display: grid; line-height: 1.3; }
 .update-text strong { font-size: 14px; }
 .update-text small { font-size: 12.5px; color: var(--muted); }
+
+/* ---------- pictures and videos in chat ---------- */
+
+.media-msg { display: grid; gap: 8px; justify-items: start; }
+.media-frame {
+  position: relative;
+  width: min(100%, 560px);
+  max-height: 70vh;
+  border-radius: var(--r-md);
+  overflow: hidden;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+.media-frame.video { width: min(100%, 640px); }
+.media-frame img, .media-frame video { display: block; width: 100%; height: 100%; object-fit: contain; background: #000; }
+.media-open { display: block; width: 100%; height: 100%; padding: 0; border: 0; background: none; cursor: zoom-in; }
+.media-frame.making {
+  display: grid;
+  place-items: end stretch;
+  background:
+    radial-gradient(120% 90% at 50% 110%, color-mix(in srgb, var(--flame) 30%, transparent), transparent 60%),
+    var(--panel);
+}
+.media-frame.making .preview { position: absolute; inset: 0; object-fit: cover; filter: saturate(1.1); opacity: .9; }
+.making-info {
+  position: relative;
+  display: grid;
+  gap: 8px;
+  padding: 14px 16px;
+  background: linear-gradient(transparent, color-mix(in srgb, var(--bg) 88%, transparent) 40%);
+}
+.making-label { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+.making-time { font-size: 12.5px; color: var(--muted); font-variant-numeric: tabular-nums; }
+.making-info .bar { height: 5px; border-radius: 99px; background: color-mix(in srgb, var(--text) 14%, transparent); overflow: hidden; }
+.making-info .bar span { display: block; height: 100%; background: linear-gradient(90deg, var(--flame), var(--orange), var(--gold)); transition: width .4s ease; }
+.media-again [data-icon] svg { width: 15px; height: 15px; }
+.read-aloud.on { color: var(--ember); }
+.read-aloud.busy [data-icon] { animation: pulse 1s ease-in-out infinite; }
+
+/* audio files */
+.file-tile.audio { clip-path: none; border-radius: 8px; place-items: center; padding: 0; }
+.file-tile.audio::after { display: none; }
+.file-tile.audio [data-icon] svg { width: 18px; height: 18px; }
+.sent-audio {
+  display: grid;
+  gap: 8px;
+  width: min(100%, 380px);
+  padding: 8px 10px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+}
+.sent-audio-head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.sent-audio-head .chip-text { flex: 1; }
+.sent-audio-head .btn { padding: 4px 10px; font-size: 13px; }
+.sent-audio audio { width: 100%; height: 36px; }
+
+/* ---------- voice chat ---------- */
+
+.voice {
+  position: fixed;
+  inset: var(--tb-h) 0 0;
+  z-index: 66;
+  display: grid;
+  grid-template-rows: 1fr auto;
+  background:
+    radial-gradient(60% 50% at 50% 42%, color-mix(in srgb, var(--flame) calc(8% + var(--level, 0) * 22%), transparent), transparent 70%),
+    var(--bg);
+  --level: 0;
+}
+/* The circle stays put while the words below it grow. */
+.voice-stage { display: grid; align-content: start; justify-content: center; justify-items: center; gap: 14px; padding: max(24px, 16vh) 24px 24px; text-align: center; overflow-y: auto; }
+.voice-orb {
+  position: relative;
+  width: 200px;
+  height: 200px;
+  margin-bottom: 18px;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  display: grid;
+  place-items: center;
+}
+.orb-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 60%, var(--gold), var(--orange) 35%, var(--flame) 62%, color-mix(in srgb, var(--flame) 0%, transparent) 72%);
+  filter: blur(2px);
+  opacity: .55;
+  transform: scale(calc(.8 + var(--level, 0) * .45));
+  transition: transform .09s linear, opacity .3s;
+}
+.orb-core {
+  position: relative;
+  width: 104px;
+  height: 104px;
+  border-radius: 50%;
+  display: grid;
+  place-items: center;
+  background: var(--panel);
+  box-shadow: 0 0 0 1px var(--line), 0 10px 40px rgba(0, 0, 0, .35);
+}
+.orb-core svg { width: 56px; height: 56px; }
+.voice[data-phase="thinking"] .orb-ring { opacity: .35; animation: orbspin 1.6s linear infinite; background: conic-gradient(from 0deg, transparent, var(--flame), var(--gold), transparent 70%); filter: blur(6px); transform: scale(.95); }
+.voice[data-phase="speaking"] .orb-ring { opacity: .8; animation: orbtalk 1.3s ease-in-out infinite; }
+.voice[data-phase="muted"] .orb-ring, .voice[data-phase="starting"] .orb-ring { opacity: .15; transform: scale(.8); }
+@keyframes orbspin { to { transform: scale(.95) rotate(360deg); } }
+@keyframes orbtalk { 50% { transform: scale(1.08); opacity: .95; } }
+.voice-state {
+  margin: 0;
+  font-family: var(--font-display);
+  font-weight: 640;
+  font-stretch: 88%;
+  font-size: 30px;
+}
+.voice-said { margin: 0; max-width: 60ch; color: var(--muted); font-size: 16px; }
+.voice-said:not(:empty)::before { content: "You said: "; color: var(--faint); }
+.voice-reply { margin: 0; max-width: 62ch; font-size: 17px; line-height: 1.55; }
+.voice-bar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 16px 20px 26px;
+}
+.voice-model { color: var(--faint); font-size: 13.5px; margin-right: 8px; }
+.voice-bar .btn[aria-pressed="true"] { color: var(--ember); border-color: color-mix(in srgb, var(--ember) 55%, transparent); }
+.btn-end { background: var(--btn); color: var(--btn-ink); border-color: transparent; }
+.btn-end:hover { filter: brightness(1.08); color: var(--btn-ink); }
+@media (prefers-reduced-motion: reduce) {
+  .orb-ring, .voice[data-phase] .orb-ring { animation: none !important; transition: none; }
+}
 
 /* ---------- full-screen viewer ---------- */
 

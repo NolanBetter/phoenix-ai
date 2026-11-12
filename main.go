@@ -71,6 +71,9 @@ func main() {
 					runtime.WindowUnminimise(ctx)
 					runtime.WindowShow(ctx)
 				},
+				SaveFile: func(name string) (string, error) {
+					return runtime.SaveFileDialog(ctx, runtime.SaveDialogOptions{Title: "Save", DefaultFilename: name})
+				},
 			})
 			startErr = backend.Start(app, ctx, func(event string, data any) {
 				runtime.EventsEmit(ctx, event, data)

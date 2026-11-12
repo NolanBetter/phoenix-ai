@@ -48,16 +48,37 @@ const (
 type Attachment struct {
 	ID        string `json:"id"`   // stored file, e.g. "3f9ac1d27b6e0a44.jpg"
 	Name      string `json:"name"` // the original file name
-	Kind      string `json:"kind"` // image, pdf, doc, text
+	Kind      string `json:"kind"` // image, pdf, doc, text, audio
 	Size      int64  `json:"size"` // original size in bytes
 	Chars     int    `json:"chars,omitempty"`
 	Pages     int    `json:"pages,omitempty"`
 	Width     int    `json:"width,omitempty"`
 	Height    int    `json:"height,omitempty"`
 	Truncated bool   `json:"truncated,omitempty"` // the file was longer than Phoenix keeps
+
+	// Audio files: ID is the transcript (.txt), Audio the sound itself.
+	Audio        string  `json:"audio,omitempty"`
+	Duration     float64 `json:"duration,omitempty"` // seconds
+	Speakers     int     `json:"speakers,omitempty"` // people heard, when speaker detection is on
+	Transcribing bool    `json:"transcribing,omitempty"`
 }
 
-var attIDPattern = regexp.MustCompile(`^[a-f0-9]{16}\.(jpg|txt)$`)
+const attachmentKindAudio = "audio"
+
+// audioExts are the audio files Phoenix accepts, and the name each is kept as.
+var audioExts = map[string]string{
+	".mp3": ".mp3", ".wav": ".wav", ".m4a": ".m4a", ".mp4": ".m4a", ".aac": ".aac",
+	".ogg": ".ogg", ".oga": ".ogg", ".opus": ".opus", ".flac": ".flac", ".weba": ".weba",
+}
+
+var attIDPattern = regexp.MustCompile(`^[a-f0-9]{16}\.(jpg|txt|png|webm|wav|mp3|m4a|ogg|opus|flac|aac|weba)$`)
+
+// attContentType is how the window should treat each kind of file.
+var attContentType = map[string]string{
+	".jpg": "image/jpeg", ".png": "image/png", ".txt": "text/plain; charset=utf-8",
+	".webm": "video/webm", ".wav": "audio/wav", ".mp3": "audio/mpeg", ".m4a": "audio/mp4",
+	".ogg": "audio/ogg", ".opus": "audio/ogg", ".flac": "audio/flac", ".aac": "audio/aac", ".weba": "audio/webm",
+}
 
 // PickerPattern is the file picker's main filter. Any text file works,
 // these are just the common ones.
@@ -67,6 +88,7 @@ var PickerPattern = "*." + strings.Join([]string{
 	"html", "htm", "css", "scss", "js", "mjs", "jsx", "ts", "tsx", "vue", "svelte",
 	"py", "ipynb", "go", "rs", "java", "kt", "c", "h", "cpp", "hpp", "cs", "php", "rb",
 	"swift", "lua", "r", "sql", "sh", "bat", "ps1", "svg",
+	"mp3", "wav", "m4a", "aac", "ogg", "opus", "flac",
 }, ";*.")
 
 // pendingAttachments are files added to the message box but not sent yet.
@@ -129,10 +151,16 @@ func (a *App) RemovePendingAttachment(id string) {
 		return
 	}
 	a.pending.mu.Lock()
+	att, ok := a.pending.items[id]
 	delete(a.pending.items, id)
 	a.pending.mu.Unlock()
 	os.Remove(filepath.Join(a.paths.Pending, id))
+	if ok && att.Audio != "" && attIDPattern.MatchString(att.Audio) {
+		os.Remove(filepath.Join(a.paths.Pending, att.Audio))
+	}
 }
+
+var errNoSpeechForAudio = errors.New("to add audio files, Phoenix needs speech recognition. Get it on the Models page, under Voice")
 
 func newAttachmentID(ext string) string {
 	b := make([]byte, 8)
@@ -148,7 +176,15 @@ func (a *App) ingest(name string, data []byte) (Attachment, error) {
 	if err != nil {
 		return Attachment{}, err
 	}
-	if err := os.WriteFile(filepath.Join(a.paths.Pending, att.ID), stored, 0o644); err != nil {
+	dest := att.ID
+	if att.Kind == attachmentKindAudio {
+		// The sound is kept to play back; the transcript comes later.
+		if st := a.GetSpeechStatus(); !st.Listen {
+			return Attachment{}, errNoSpeechForAudio
+		}
+		dest = att.Audio
+	}
+	if err := os.WriteFile(filepath.Join(a.paths.Pending, dest), stored, 0o644); err != nil {
 		return Attachment{}, fmt.Errorf("couldn't save %s: %w", name, err)
 	}
 	a.pending.mu.Lock()
@@ -165,6 +201,18 @@ func processAttachment(name string, data []byte) (Attachment, []byte, error) {
 	sniff := http.DetectContentType(data)
 
 	switch {
+	case audioExts[ext] != "" || strings.HasPrefix(sniff, "audio/"):
+		keep := audioExts[ext]
+		if keep == "" {
+			keep = map[string]string{"audio/mpeg": ".mp3", "audio/wave": ".wav", "audio/wav": ".wav"}[strings.Split(sniff, ";")[0]]
+		}
+		if keep == "" {
+			return att, nil, fmt.Errorf("Phoenix can't play %s. Try MP3, WAV, M4A, OGG or FLAC", name)
+		}
+		id := newAttachmentID("")
+		att.Kind, att.ID, att.Audio, att.Transcribing = attachmentKindAudio, id+".txt", id+keep, true
+		return att, data, nil
+
 	case strings.HasPrefix(sniff, "image/") || ext == ".webp" || ext == ".bmp":
 		img, _, err := image.Decode(bytes.NewReader(data))
 		if err != nil {
@@ -401,6 +449,9 @@ func (a *App) takePending(chatID string, ids []string) ([]Attachment, error) {
 		if !ok || !attIDPattern.MatchString(id) {
 			return nil, errors.New("one of the files is no longer there. Remove it and add it again")
 		}
+		if att.Transcribing {
+			return nil, fmt.Errorf("%s is still being written down. Wait a moment and send again", att.Name)
+		}
 		out = append(out, att)
 	}
 	dir := filepath.Join(a.paths.Chats, chatID)
@@ -410,6 +461,9 @@ func (a *App) takePending(chatID string, ids []string) ([]Attachment, error) {
 	for _, att := range out {
 		if err := os.Rename(filepath.Join(a.paths.Pending, att.ID), filepath.Join(dir, att.ID)); err != nil {
 			return nil, fmt.Errorf("couldn't save %s: %w", att.Name, err)
+		}
+		if att.Audio != "" && attIDPattern.MatchString(att.Audio) {
+			_ = os.Rename(filepath.Join(a.paths.Pending, att.Audio), filepath.Join(dir, att.Audio))
 		}
 		delete(a.pending.items, att.ID)
 	}
@@ -454,6 +508,8 @@ func AttachmentHandler(a *App) http.Handler {
 		switch {
 		case parts[0] == "pending":
 			dir = a.paths.Pending
+		case parts[0] == "voice":
+			dir = a.paths.Voice
 		case chatIDPattern.MatchString(parts[0]):
 			dir = filepath.Join(a.paths.Chats, parts[0])
 		default:
@@ -471,9 +527,9 @@ func AttachmentHandler(a *App) http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		ctype := "image/jpeg"
-		if strings.HasSuffix(parts[1], ".txt") {
-			ctype = "text/plain; charset=utf-8"
+		ctype := attContentType[filepath.Ext(parts[1])]
+		if ctype == "" {
+			ctype = "application/octet-stream"
 		}
 		w.Header().Set("Content-Type", ctype)
 		w.Header().Set("X-Content-Type-Options", "nosniff")
